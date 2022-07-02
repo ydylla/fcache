@@ -36,6 +36,8 @@ func (e *cacheEntry) isValid() bool {
 type cache struct {
 	cacheDir   string
 	targetSize int64
+	dirMode    fs.FileMode
+	fileMode   fs.FileMode
 
 	usedSize  int64
 	has       int64
@@ -383,12 +385,12 @@ func (c *cache) writeEntry(entry *cacheEntry, filler Filler) (removedBytes int64
 	entry.path = newPath
 
 	dir := filepath.Join(c.cacheDir, shard)
-	err = os.MkdirAll(dir, 0750)
+	err = os.MkdirAll(dir, c.dirMode)
 	if err != nil && !errors.Is(err, fs.ErrExist) {
 		return removedBytes, addedBytes, err
 	}
 
-	f, err = os.OpenFile(entry.path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0640)
+	f, err = os.OpenFile(entry.path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, c.fileMode)
 	if err != nil {
 		return removedBytes, addedBytes, err
 	}

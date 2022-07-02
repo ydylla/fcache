@@ -28,21 +28,35 @@ func (b *builder) WithEvictionInterval(evictionInterval time.Duration) *builder 
 	return b
 }
 
+func (b *builder) WithFileMode(perm fs.FileMode) *builder {
+	b.fileMode = perm
+	return b
+}
+
 func (b *builder) Build() (Cache, error) {
 	if b.targetSize <= 0 {
-		return nil, fmt.Errorf("targetSize has to be > 0")
+		return nil, errors.New("targetSize has to be > 0")
 	}
 
 	if !b.evictionConfigured {
 		b.evictionInterval = 10 * time.Minute
 	}
 
-	err := os.MkdirAll(b.cacheDir, 0750)
+	if b.fileMode == 0 {
+		b.fileMode = 0600
+	} else {
+		if b.fileMode != (b.fileMode | 0600) {
+			return nil, errors.New("fileMode has to be at least 0600")
+		}
+	}
+	dirMode := b.fileMode | 0700
+
+	err := os.MkdirAll(b.cacheDir, dirMode)
 	if err != nil && !errors.Is(err, fs.ErrExist) {
 		return nil, fmt.Errorf("failed to create cacheDir at %s: %w", b.cacheDir, err)
 	}
 	writeTestPath := filepath.Join(b.cacheDir, "test")
-	f, err := os.Create(writeTestPath)
+	f, err := os.OpenFile(writeTestPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, b.fileMode)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create test file %s: %w", writeTestPath, err)
 	}
@@ -65,6 +79,8 @@ func (b *builder) Build() (Cache, error) {
 		entriesList:      list.New(),
 		entriesMap:       map[uint64]*list.Element{},
 		evictionInterval: b.evictionInterval,
+		dirMode:          dirMode,
+		fileMode:         b.fileMode,
 	}
 	err = c.loadEntries()
 	if err != nil {

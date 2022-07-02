@@ -7,7 +7,9 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"sync"
 	"testing"
@@ -749,8 +751,8 @@ func TestFileCache_Delete(t *testing.T) {
 	entry, err := c.Put(1, DATA, 0)
 	assertNoError(t, err)
 
-	_, path := readFileForKey(t, dir, 1, entry.Mtime, entry.Expires)
-	_, err = os.Stat(path)
+	_, p := readFileForKey(t, dir, 1, entry.Mtime, entry.Expires)
+	_, err = os.Stat(p)
 	assertNoError(t, err)
 
 	deletedEntry, err := c.Delete(1)
@@ -758,9 +760,9 @@ func TestFileCache_Delete(t *testing.T) {
 
 	assertStruct(t, entry, deletedEntry)
 
-	_, err = os.Stat(path)
+	_, err = os.Stat(p)
 	if !errors.Is(err, fs.ErrNotExist) {
-		t.Fatal("path does still exist:", path)
+		t.Fatal("path does still exist:", p)
 	}
 
 	_, err = c.Has(1)
@@ -1076,4 +1078,51 @@ func TestFileCache_Load(t *testing.T) {
 		Evictions:      0,
 		EvictionErrors: nil,
 	}, c2.Stats())
+}
+
+func TestFileCache_WithFileMode(t *testing.T) {
+	dir := t.TempDir()
+	fileMode := fs.FileMode(0744) // test with value that does not interfere with default umask of 022
+	dirMode := fileMode | fs.ModeDir | 0700
+	c, err := Builder(dir, 1*MB).WithFileMode(fileMode).Build()
+	assertNoError(t, err)
+
+	_, err = c.Put(1, DATA, 0)
+	assertNoError(t, err)
+
+	entries, err := os.ReadDir(dir)
+	assertNoError(t, err)
+
+	// sadly this test does not work on Windows,
+	// since it seems to use fixed file modes
+	if runtime.GOOS == "windows" {
+		fileMode = 0666
+		dirMode = 0777 | fs.ModeDir
+	}
+
+	for _, entry := range entries {
+		if entry.IsDir() {
+			info, err := entry.Info()
+			assertNoError(t, err)
+			if info.Mode() != dirMode {
+				t.Fatalf("Expected mode %s for %s but got %s\n", dirMode, entry.Name(), info.Mode())
+			}
+
+			files, err := os.ReadDir(path.Join(dir, entry.Name()))
+			assertNoError(t, err)
+			for _, file := range files {
+				if file.IsDir() {
+					t.Fatal("Expected file but found dir:", entry.Name())
+				} else {
+					info, err := file.Info()
+					assertNoError(t, err)
+					if info.Mode() != fileMode {
+						t.Fatalf("Expected mode %s for %s but got %s\n", fileMode, file.Name(), info.Mode())
+					}
+				}
+			}
+		} else {
+			t.Fatal("Expected dir but found file:", entry.Name())
+		}
+	}
 }
