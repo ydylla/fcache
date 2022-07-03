@@ -57,7 +57,6 @@ type cache struct {
 	evictionErrors   []EvictionError
 }
 
-// Stats returns some metrics about the cache and the last eviction error if there is any.
 func (c *cache) Stats() Stats {
 	c.lock.RLock()
 	defer c.lock.RUnlock()
@@ -94,12 +93,10 @@ func (c *cache) Has(key uint64) (*EntryInfo, error) {
 	return nil, ErrNotFound
 }
 
-// Put adds a byte slice as a blob to the cache against the given key.
 func (c *cache) Put(key uint64, val []byte, ttl time.Duration) (*EntryInfo, error) {
 	return c.PutReader(key, bytes.NewReader(val), ttl)
 }
 
-// PutReader adds the contents of a reader as a blob to the cache against the given key.
 func (c *cache) PutReader(key uint64, r io.Reader, ttl time.Duration) (*EntryInfo, error) {
 	entry := c.putEntry(key, ttl, true)
 
@@ -119,7 +116,6 @@ func (c *cache) PutReader(key uint64, r io.Reader, ttl time.Duration) (*EntryInf
 	return info, nil
 }
 
-// Get returns a byte slice for a blob in the cache, or NotFound otherwise.
 func (c *cache) Get(key uint64) ([]byte, *EntryInfo, error) {
 	r, info, err := c.GetReader(key)
 	if err != nil {
@@ -136,8 +132,7 @@ func (c *cache) Get(key uint64) ([]byte, *EntryInfo, error) {
 	return data, info, nil
 }
 
-// GetReader returns a reader for a blob in the cache, or NotFound otherwise.
-func (c *cache) GetReader(key uint64) (ReadSeekCloser, *EntryInfo, error) {
+func (c *cache) GetReader(key uint64) (io.ReadSeekCloser, *EntryInfo, error) {
 	entry := c.getEntry(key, true)
 	if entry == nil {
 		return nil, nil, ErrNotFound
@@ -166,7 +161,6 @@ func (c *cache) GetReader(key uint64) (ReadSeekCloser, *EntryInfo, error) {
 	return f, info, nil
 }
 
-// GetOrPut returns a byte slice for a blob in the cache, or atomically updates it with the data from Filler and then returns the new data.
 func (c *cache) GetOrPut(key uint64, ttl time.Duration, filler Filler) (data []byte, info *EntryInfo, hit bool, err error) {
 	r, info, hit, err := c.GetReaderOrPut(key, ttl, filler)
 	if err != nil {
@@ -183,8 +177,7 @@ func (c *cache) GetOrPut(key uint64, ttl time.Duration, filler Filler) (data []b
 	return data, info, hit, nil
 }
 
-// GetReaderOrPut returns a reader for a blob in the cache, or atomically updates it with the data from Filler and then returns the new data.
-func (c *cache) GetReaderOrPut(key uint64, ttl time.Duration, filler Filler) (r ReadSeekCloser, info *EntryInfo, hit bool, err error) {
+func (c *cache) GetReaderOrPut(key uint64, ttl time.Duration, filler Filler) (r io.ReadSeekCloser, info *EntryInfo, hit bool, err error) {
 	c.lock.Lock()
 	entry := c.getEntry(key, false)
 	if entry != nil {
@@ -235,7 +228,6 @@ func (c *cache) GetReaderOrPut(key uint64, ttl time.Duration, filler Filler) (r 
 	return r, info, false, nil
 }
 
-// Delete deletes the specified cache entry if it exists. If it does not exit this is a noop.
 func (c *cache) Delete(key uint64) (*EntryInfo, error) {
 	c.lock.Lock()
 	c.deletes += 1
