@@ -10,6 +10,9 @@ import (
 	"time"
 )
 
+// Builder configures & builds a new cache.
+// cacheDir is the base directory of the cache.
+// targetSize is target size of the cache. Depending on the eviction interval and insert load it may grow larger.
 func Builder(cacheDir string, targetSize Size) *builder {
 	return &builder{cacheDir: cacheDir, targetSize: targetSize}
 }
@@ -22,17 +25,23 @@ type builder struct {
 	fileMode           fs.FileMode
 }
 
+// WithEvictionInterval configures how much time has to pass between evictions.
+// By default its 10 minutes.
 func (b *builder) WithEvictionInterval(evictionInterval time.Duration) *builder {
 	b.evictionInterval = evictionInterval
 	b.evictionConfigured = true
 	return b
 }
 
+// WithFileMode configures which file mode is used for the cache files.
+// By default 0600 is used.
+// Remember to also check your umask when you change this.
 func (b *builder) WithFileMode(perm fs.FileMode) *builder {
 	b.fileMode = perm
 	return b
 }
 
+// Build initializes the cache and also loads the state of existing entries from disk.
 func (b *builder) Build() (Cache, error) {
 	if b.targetSize <= 0 {
 		return nil, errors.New("targetSize has to be > 0")
