@@ -11,7 +11,9 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -1125,4 +1127,37 @@ func TestFileCache_WithFileMode(t *testing.T) {
 			t.Fatal("Expected dir but found file:", entry.Name())
 		}
 	}
+}
+
+func TestFileCache_PutWhileReaderIsOpen(t *testing.T) {
+	dir := t.TempDir()
+	ci, err := Builder(dir, 1*GB).WithEvictionInterval(1 * time.Hour).Build()
+	assertNoError(t, err)
+	c := ci.(*cache)
+
+	key := uint64(1)
+	_, err = c.Put(key, DATA, 0)
+	assertNoError(t, err)
+
+	// get and hold open
+	reader, _, err := c.GetReader(key)
+	assertNoError(t, err)
+
+	// update open key
+	update := []byte("other data")
+	_, err = c.Put(key, update, 0)
+	if err != nil && runtime.GOOS == "windows" && err.(*fs.PathError).Op == "remove" && strings.HasPrefix(err.(*fs.PathError).Path, dir) && err.(*fs.PathError).Err.(syscall.Errno) == 32 {
+		// ignore internal/syscall/windows.ERROR_SHARING_VIOLATION(32) and abort test
+		_ = reader.Close()
+		return
+	}
+	assertNoError(t, err)
+
+	// fresh get reads updated entry
+	updatedReader, _, err := c.GetReader(key)
+	assertNoError(t, err)
+	assertReaderBytes(t, update, updatedReader)
+
+	// first get still reads initial data
+	assertReaderBytes(t, DATA, reader)
 }
