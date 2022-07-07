@@ -15,8 +15,9 @@ fcache is a file based persistent blob cache. It can be used to bring remote fil
 
 
 ## Installation
-`go get github.com/ydylla/fcache`
-
+```shell
+go get github.com/ydylla/fcache
+```
 
 ## Usage
 To build a new cache use the [Builder](https://pkg.go.dev/github.com/ydylla/fcache#Builder):
