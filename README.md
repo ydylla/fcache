@@ -1,4 +1,6 @@
 # fcache
+![coverage](https://img.shields.io/badge/coverage-91%25-green) [![go-report-card](https://goreportcard.com/badge/github.com/ydylla/fcache)](https://goreportcard.com/report/github.com/ydylla/fcache) [![reference](https://pkg.go.dev/badge/github.com/ydylla/fcache.svg)](https://pkg.go.dev/github.com/ydylla/fcache)
+
 fcache is a file based persistent blob cache. It can be used to bring remote files closer to applications.
 
 
