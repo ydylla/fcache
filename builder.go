@@ -23,6 +23,8 @@ type builder struct {
 	evictionConfigured bool
 	evictionInterval   time.Duration
 	fileMode           fs.FileMode
+	backgroundInit     bool
+	initCallback       func(err error)
 }
 
 // WithEvictionInterval configures how much time has to pass between evictions.
@@ -38,6 +40,15 @@ func (b *builder) WithEvictionInterval(evictionInterval time.Duration) *builder 
 // Remember to also check your umask when you change this.
 func (b *builder) WithFileMode(perm fs.FileMode) *builder {
 	b.fileMode = perm
+	return b
+}
+
+// WithBackgroundInit restores the cache state in background instead of in Build.
+// If initCallback is not nil it will be called once when all cache entries are restored or an error occurred.
+// For the duration of init all cache operations will block.
+func (b *builder) WithBackgroundInit(initCallback func(initError error)) *builder {
+	b.backgroundInit = true
+	b.initCallback = initCallback
 	return b
 }
 
@@ -91,9 +102,22 @@ func (b *builder) Build() (Cache, error) {
 		dirMode:          dirMode,
 		fileMode:         b.fileMode,
 	}
-	err = c.loadEntries()
-	if err != nil {
-		return nil, fmt.Errorf("failed to restore cache: %w", err)
+
+	if b.backgroundInit {
+		go func() {
+			err = c.loadEntries()
+			if b.initCallback != nil {
+				if err != nil {
+					err = fmt.Errorf("failed to restore cache: %w", err)
+				}
+				b.initCallback(err)
+			}
+		}()
+	} else {
+		err = c.loadEntries()
+		if err != nil {
+			return nil, fmt.Errorf("failed to restore cache: %w", err)
+		}
 	}
 
 	return c, nil

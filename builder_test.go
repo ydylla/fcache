@@ -2,6 +2,7 @@ package fcache
 
 import (
 	"io/fs"
+	"sync"
 	"testing"
 )
 
@@ -33,4 +34,37 @@ func TestBuilder_WithFileMode(t *testing.T) {
 	if c.dirMode != 0766 {
 		t.Fatalf("Expected '%o' but got '%o'\n", fileMode, c.fileMode)
 	}
+}
+
+func TestBuilder_WithBackgroundInit(t *testing.T) {
+	dir := t.TempDir()
+
+	c1, err := Builder(dir, 50*MB).WithBackgroundInit(nil).Build()
+	assertNoError(t, err)
+
+	_, err = c1.Put(1, []byte("Hello World"), 0)
+	assertNoError(t, err)
+
+	wg := sync.WaitGroup{}
+
+	wg.Add(1)
+	c2, err := Builder(dir, 50*MB).WithBackgroundInit(func(initError error) {
+		defer wg.Done()
+		assertNoError(t, initError)
+	}).Build()
+	assertNoError(t, err)
+
+	wg.Wait()
+
+	assertStruct(t, Stats{
+		Items:          1,
+		Bytes:          11,
+		Has:            0,
+		Gets:           0,
+		Hits:           0,
+		Puts:           0,
+		Deletes:        0,
+		Evictions:      0,
+		EvictionErrors: nil,
+	}, c2.Stats())
 }
