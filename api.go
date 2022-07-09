@@ -104,4 +104,7 @@ type Cache interface {
 	// Delete removes the cache entry at key.
 	// If no cache entry exists at key nothing happens.
 	Delete(key uint64) (info *EntryInfo, err error)
+
+	// Clear removes all cache entries and optionally resets statistics.
+	Clear(resetStats bool) error
 }

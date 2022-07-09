@@ -57,6 +57,8 @@ type cache struct {
 	evictionErrors   []EvictionError
 }
 
+var _ Cache = (*cache)(nil)
+
 func (c *cache) Stats() Stats {
 	c.lock.RLock()
 	defer c.lock.RUnlock()
@@ -251,6 +253,34 @@ func (c *cache) Delete(key uint64) (*EntryInfo, error) {
 	}
 
 	return nil, nil
+}
+
+func (c *cache) Clear(resetStats bool) error {
+	c.lock.Lock()
+	defer c.lock.Unlock()
+
+	c.deletes += int64(len(c.entriesMap))
+
+	c.entriesMap = make(map[uint64]*list.Element)
+	c.entriesList.Init()
+
+	err := os.RemoveAll(c.cacheDir)
+	if err != nil {
+		return err
+	}
+
+	c.usedSize = 0
+
+	if resetStats {
+		c.has = 0
+		c.gets = 0
+		c.hits = 0
+		c.puts = 0
+		c.deletes = 0
+		c.evictions = 0
+	}
+
+	return nil
 }
 
 func (c *cache) getEntry(key uint64, lock bool) *cacheEntry {

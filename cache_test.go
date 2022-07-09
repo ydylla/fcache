@@ -785,6 +785,74 @@ func TestFileCache_Delete(t *testing.T) {
 	}, c.Stats())
 }
 
+func TestFileCache_Clear(t *testing.T) {
+	dir := t.TempDir()
+	ci, err := Builder(dir, 1*TB).WithEvictionInterval(1 * time.Hour).Build()
+	assertNoError(t, err)
+	c := ci.(*cache)
+
+	_, err = c.Put(1, DATA, 0)
+	assertNoError(t, err)
+
+	_, _, err = c.Get(1)
+	assertNoError(t, err)
+
+	_, err = c.Has(1)
+	assertNoError(t, err)
+
+	_, err = c.Put(2, DATA, 0)
+	assertNoError(t, err)
+
+	_, err = c.Delete(2)
+	assertNoError(t, err)
+
+	_, err = c.Put(3, DATA, 0)
+	assertNoError(t, err)
+
+	err = c.Clear(false)
+	assertNoError(t, err)
+
+	_, err = os.Stat(dir)
+	if !os.IsNotExist(err) {
+		t.Fatal("Cache dir was not removed")
+	}
+
+	assertStruct(t, Stats{
+		Items:          0,
+		Bytes:          0,
+		Has:            1,
+		Gets:           1,
+		Hits:           1,
+		Puts:           3,
+		Deletes:        3, // 1 manual + 2 from clear
+		Evictions:      0,
+		EvictionErrors: nil,
+	}, c.Stats())
+
+	_, err = c.Put(1, DATA, 0)
+	assertNoError(t, err)
+
+	err = c.Clear(true)
+	assertNoError(t, err)
+
+	_, err = os.Stat(dir)
+	if !os.IsNotExist(err) {
+		t.Fatal("Cache dir was not removed")
+	}
+
+	assertStruct(t, Stats{
+		Items:          0,
+		Bytes:          0,
+		Has:            0,
+		Gets:           0,
+		Hits:           0,
+		Puts:           0,
+		Deletes:        0,
+		Evictions:      0,
+		EvictionErrors: nil,
+	}, c.Stats())
+}
+
 func TestFileCache_Eviction(t *testing.T) {
 	dir := t.TempDir()
 	ci, err := Builder(dir, 130*Byte).WithEvictionInterval(1 * time.Hour).Build()
