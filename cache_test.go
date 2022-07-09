@@ -70,44 +70,81 @@ func assertReaderBytes(t *testing.T, expected []byte, r io.ReadCloser) {
 	}
 }
 
+func findFileForKey(t *testing.T, dir string, key uint64, mtime time.Time, expires time.Time) (path string, err error) {
+	t.Helper()
+	shard, name := toFilename(key, mtime, expires, 0)
+	parts := strings.Split(name, "_")
+	prefix := parts[0] + "_" + parts[1] + "_" + parts[2]
+	shardDir := filepath.Join(dir, shard)
+
+	files, err := os.ReadDir(shardDir)
+	assertNoError(t, err)
+
+	for _, file := range files {
+		if strings.HasPrefix(file.Name(), prefix) {
+			return filepath.Join(shardDir, file.Name()), nil
+		}
+	}
+
+	return "", fmt.Errorf("could not find file with prefix %s in %s", prefix, shardDir)
+}
+
 func readFileForKey(t *testing.T, dir string, key uint64, mtime time.Time, expires time.Time) (data []byte, path string) {
 	t.Helper()
-	shard, name := toFilename(key, mtime, expires)
-	path = filepath.Join(dir, shard, name)
-	data, err := os.ReadFile(path)
+	file, err := findFileForKey(t, dir, key, mtime, expires)
 	assertNoError(t, err)
-	return data, path
+	data, err = os.ReadFile(file)
+	assertNoError(t, err)
+	return data, file
 }
 
 func TestFileCache_toFilename(t *testing.T) {
 	mtime := time.Unix(1644519455, 0)
 	expires := time.Unix(1644519465, 0)
+	sequence := uint64(1234)
 
-	shard1, name1 := toFilename(1, mtime, expires)
+	shard1, name1 := toFilename(1, mtime, expires, sequence)
 	assertString(t, "01", shard1)
-	assertString(t, "1_kzhcf8k8_kzhcfga0", name1)
+	assertString(t, "1_kzhcf8k8_kzhcfga0_ya", name1)
 
-	shard2, name2 := toFilename(123, mtime, time.Time{})
+	shard2, name2 := toFilename(123, mtime, time.Time{}, 0)
 	assertString(t, "3f", shard2)
-	assertString(t, "3f_kzhcf8k8_+", name2)
+	assertString(t, "3f_kzhcf8k8_+_0", name2)
 }
 
 func TestFileCache_fromFilename(t *testing.T) {
-	key1, mtime1, expires1, err1 := fromFilename("1_kzhcf8k8_kzhcfga0")
+	key1, mtime1, expires1, sequence1, err1 := fromFilename("1_kzhcf8k8_kzhcfga0")
 	assertNoError(t, err1)
 	if key1 != 1 {
 		t.Fatal("Expected 1 but got:", key1)
 	}
 	assertTime(t, time.Unix(1644519455, 0), mtime1)
 	assertTime(t, time.Unix(1644519465, 0), expires1)
+	if sequence1 != 0 {
+		t.Fatal("Expected 0 but got:", sequence1)
+	}
 
-	key2, mtime2, expires2, err2 := fromFilename("3f_kzhcf8k8_+")
+	key2, mtime2, expires2, sequence2, err2 := fromFilename("3f_kzhcf8k8_+")
 	assertNoError(t, err2)
 	if key2 != 123 {
 		t.Fatal("Expected 123 but got:", key2)
 	}
 	assertTime(t, time.Unix(1644519455, 0), mtime2)
 	assertTime(t, time.Time{}, expires2)
+	if sequence2 != 0 {
+		t.Fatal("Expected 0 but got:", sequence2)
+	}
+
+	key3, mtime3, expires3, sequence3, err3 := fromFilename("3f_kzhcf8k8_+_ya")
+	assertNoError(t, err3)
+	if key3 != 123 {
+		t.Fatal("Expected 123 but got:", key3)
+	}
+	assertTime(t, time.Unix(1644519455, 0), mtime3)
+	assertTime(t, time.Time{}, expires3)
+	if sequence3 != 1234 {
+		t.Fatal("Expected 1234 but got:", sequence3)
+	}
 }
 
 func TestFileCache_Put(t *testing.T) {
@@ -921,11 +958,9 @@ func TestFileCache_Eviction(t *testing.T) {
 	if err != ErrNotFound {
 		t.Fatal("entry 1 should have been evicted")
 	}
-	shard, name := toFilename(1, e1.Mtime, e1.Expires)
-	path1 := filepath.Join(dir, shard, name)
-	_, err = os.Stat(path1)
-	if !errors.Is(err, fs.ErrNotExist) {
-		t.Fatal("entry 1 file was not removed", path1)
+	_, err = findFileForKey(t, dir, 1, e1.Mtime, e1.Expires)
+	if err == nil {
+		t.Fatal("entry 1 file was not removed")
 	}
 
 	_, err = c.Has(2)
@@ -936,11 +971,9 @@ func TestFileCache_Eviction(t *testing.T) {
 	if err != ErrNotFound {
 		t.Fatal("entry 3 should have been evicted")
 	}
-	shard, name = toFilename(1, e3.Mtime, e3.Expires)
-	path3 := filepath.Join(dir, shard, name)
-	_, err = os.Stat(path3)
-	if !errors.Is(err, fs.ErrNotExist) {
-		t.Fatal("entry 3 file was not removed", path3)
+	_, err = findFileForKey(t, dir, 3, e3.Mtime, e3.Expires)
+	if err == nil {
+		t.Fatal("entry 3 file was not removed")
 	}
 	_, err = c.Has(4)
 	if err != nil {
@@ -973,11 +1006,9 @@ func TestFileCache_Eviction(t *testing.T) {
 	if err != ErrNotFound {
 		t.Fatal("entry 5 should have been evicted")
 	}
-	shard, name = toFilename(1, e5.Mtime, e5.Expires)
-	path5 := filepath.Join(dir, shard, name)
-	_, err = os.Stat(path5)
-	if !errors.Is(err, fs.ErrNotExist) {
-		t.Fatal("entry 5 file was not removed", path5)
+	_, err = findFileForKey(t, dir, 5, e5.Mtime, e5.Expires)
+	if err == nil {
+		t.Fatal("entry 5 file was not removed")
 	}
 
 	assertStruct(t, Stats{
@@ -1057,22 +1088,18 @@ func TestFileCache_EvictionOnPut(t *testing.T) {
 	if err != ErrNotFound {
 		t.Fatal("entry 1 should have been evicted")
 	}
-	shard1, name1 := toFilename(1, e1.Mtime, e1.Expires)
-	path1 := filepath.Join(dir, shard1, name1)
-	_, err = os.Stat(path1)
-	if !errors.Is(err, fs.ErrNotExist) {
-		t.Fatal("entry 1 file was not removed", path1)
+	_, err = findFileForKey(t, dir, 1, e1.Mtime, e1.Expires)
+	if err == nil {
+		t.Fatal("entry 1 file was not removed")
 	}
 
 	_, err = c.Has(2)
 	if err != ErrNotFound {
 		t.Fatal("entry 2 should have been evicted")
 	}
-	shard2, name2 := toFilename(1, e2.Mtime, e2.Expires)
-	path2 := filepath.Join(dir, shard2, name2)
-	_, err = os.Stat(path2)
-	if !errors.Is(err, fs.ErrNotExist) {
-		t.Fatal("entry 2 file was not removed", path2)
+	_, err = findFileForKey(t, dir, 2, e2.Mtime, e2.Expires)
+	if err == nil {
+		t.Fatal("entry 2 file was not removed")
 	}
 
 	_, err = c.Has(3)
@@ -1097,16 +1124,16 @@ func TestFileCache_Load(t *testing.T) {
 	e2, err := c1.Put(2, DATA, 1*time.Hour)
 	assertNoError(t, err)
 
-	e3, err := c1.Put(3, DATA, 0)
-	assertNoError(t, err)
-
 	mtime4 := time.Now().Add(-24 * time.Hour)
 	expires4 := time.Now().Add(-1 * time.Hour)
-	shard, name := toFilename(4, mtime4, expires4)
+	shard, name := toFilename(4, mtime4, expires4, 123)
 	err = os.MkdirAll(filepath.Join(dir, shard), 0750)
 	assertNoError(t, err)
 	path4 := filepath.Join(dir, shard, name)
 	err = os.WriteFile(path4, DATA, 0640)
+	assertNoError(t, err)
+
+	e3, err := c1.Put(3, DATA, 0)
 	assertNoError(t, err)
 
 	ci2, err := Builder(dir, 1*GB).WithEvictionInterval(1 * time.Hour).Build()
@@ -1148,6 +1175,10 @@ func TestFileCache_Load(t *testing.T) {
 		Evictions:      0,
 		EvictionErrors: nil,
 	}, c2.Stats())
+
+	if c2.sequence != 123 {
+		t.Fatal("cache should have sequence of 123 but has", c2.sequence)
+	}
 }
 
 func TestFileCache_WithFileMode(t *testing.T) {

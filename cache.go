@@ -16,13 +16,14 @@ import (
 )
 
 type cacheEntry struct {
-	key     uint64
-	lock    sync.RWMutex
-	onDisk  bool
-	path    string
-	size    int64
-	mtime   time.Time
-	expires time.Time
+	key      uint64
+	lock     sync.RWMutex
+	onDisk   bool
+	sequence uint64
+	path     string
+	size     int64
+	mtime    time.Time
+	expires  time.Time
 }
 
 func (e *cacheEntry) isExpired() bool {
@@ -48,6 +49,7 @@ type cache struct {
 	evictions int64
 
 	lock        sync.RWMutex
+	sequence    uint64
 	entriesList *list.List
 	entriesMap  map[uint64]*list.Element
 
@@ -326,6 +328,9 @@ func (c *cache) putEntry(key uint64, ttl time.Duration, lock bool) *cacheEntry {
 	entry.mtime = mtime
 	entry.expires = expires
 	entry.onDisk = false
+	entry.sequence = c.sequence
+
+	c.sequence += 1
 
 	if exists {
 		c.entriesList.MoveToFront(item)
@@ -336,7 +341,7 @@ func (c *cache) putEntry(key uint64, ttl time.Duration, lock bool) *cacheEntry {
 	return entry
 }
 
-func toFilename(key uint64, mtime time.Time, expires time.Time) (string, string) {
+func toFilename(key uint64, mtime time.Time, expires time.Time, sequence uint64) (string, string) {
 	var expiresStr string
 	if expires.IsZero() {
 		expiresStr = "+"
@@ -350,35 +355,42 @@ func toFilename(key uint64, mtime time.Time, expires time.Time) (string, string)
 	} else {
 		shard = fmt.Sprintf("%02s", keyStr)
 	}
-	return shard, keyStr + "_" + strconv.FormatInt(mtime.UnixMilli(), 36) + "_" + expiresStr
+	return shard, keyStr + "_" + strconv.FormatInt(mtime.UnixMilli(), 36) + "_" + expiresStr + "_" + strconv.FormatUint(sequence, 36)
 }
 
-func fromFilename(filename string) (key uint64, mtime time.Time, expires time.Time, err error) {
+func fromFilename(filename string) (key uint64, mtime time.Time, expires time.Time, sequence uint64, err error) {
 	parts := strings.Split(filename, "_")
-	if len(parts) != 3 {
-		return key, mtime, expires, fmt.Errorf("%s should contain 3 pipe symbols but has %d", filename, len(parts))
+	if len(parts) != 3 && len(parts) != 4 {
+		return key, mtime, expires, sequence, fmt.Errorf("%s should contain 4 underscore symbols but has %d", filename, len(parts))
 	}
 
 	key, err = strconv.ParseUint(parts[0], 36, 64)
 	if err != nil {
-		return key, mtime, expires, fmt.Errorf("failed to restore key from %s: %w", parts[0], err)
+		return key, mtime, expires, sequence, fmt.Errorf("failed to restore key from %s: %w", parts[0], err)
 	}
 
 	mtimeEpochMillis, err := strconv.ParseInt(parts[1], 36, 64)
 	if err != nil {
-		return key, mtime, expires, fmt.Errorf("failed to restore mtime from %s: %w", parts[1], err)
+		return key, mtime, expires, sequence, fmt.Errorf("failed to restore mtime from %s: %w", parts[1], err)
 	}
 	mtime = time.UnixMilli(mtimeEpochMillis)
 
 	if parts[2] != "+" {
 		expiresEpochMillis, err := strconv.ParseInt(parts[2], 36, 64)
 		if err != nil {
-			return key, mtime, expires, fmt.Errorf("failed to restore expires from %s: %w", parts[2], err)
+			return key, mtime, expires, sequence, fmt.Errorf("failed to restore expires from %s: %w", parts[2], err)
 		}
 		expires = time.UnixMilli(expiresEpochMillis)
 	}
 
-	return key, mtime, expires, nil
+	if len(parts) == 4 {
+		sequence, err = strconv.ParseUint(parts[3], 36, 64)
+		if err != nil {
+			return key, mtime, expires, sequence, fmt.Errorf("failed to restore sequence from %s: %w", parts[3], err)
+		}
+	}
+
+	return key, mtime, expires, sequence, nil
 }
 
 func (c *cache) writeEntry(entry *cacheEntry, filler Filler) (removedBytes int64, addedBytes int64, err error) {
@@ -394,7 +406,7 @@ func (c *cache) writeEntry(entry *cacheEntry, filler Filler) (removedBytes int64
 		}
 	}()
 
-	shard, name := toFilename(entry.key, entry.mtime, entry.expires)
+	shard, name := toFilename(entry.key, entry.mtime, entry.expires, entry.sequence)
 	newPath := filepath.Join(c.cacheDir, shard, name)
 
 	if entry.path != "" {
@@ -498,7 +510,7 @@ func (c *cache) loadEntries() error {
 			for _, entry := range entries {
 				if !entry.IsDir() {
 					path := filepath.Join(shardDirPath, entry.Name())
-					key, mtime, expires, err := fromFilename(entry.Name())
+					key, mtime, expires, sequence, err := fromFilename(entry.Name())
 					if err != nil {
 						return fmt.Errorf("failed to restore meta from %s: %w", path, err)
 					}
@@ -508,9 +520,12 @@ func (c *cache) loadEntries() error {
 						return fmt.Errorf("failed to restore size from %s: %w", path, err)
 					}
 
-					ce := &cacheEntry{key: key, onDisk: true, path: path, size: info.Size(), mtime: mtime, expires: expires}
+					ce := &cacheEntry{key: key, onDisk: true, sequence: sequence, path: path, size: info.Size(), mtime: mtime, expires: expires}
 					c.entriesMap[ce.key] = c.entriesList.PushFront(ce)
 					c.usedSize += ce.size
+					if sequence > c.sequence {
+						c.sequence = sequence
+					}
 				}
 			}
 		}
