@@ -48,13 +48,17 @@ func TestBuilder_WithBackgroundInit(t *testing.T) {
 	wg := sync.WaitGroup{}
 
 	wg.Add(1)
-	c2, err := Builder(dir, 50*MB).WithBackgroundInit(func(initError error) {
+	var cacheFromInit Cache
+	c2, err := Builder(dir, 50*MB).WithBackgroundInit(func(initCache Cache, initError error) {
 		defer wg.Done()
+		cacheFromInit = initCache
 		assertNoError(t, initError)
 	}).Build()
 	assertNoError(t, err)
 
 	wg.Wait()
+
+	assertStruct(t, c2, cacheFromInit)
 
 	assertStruct(t, Stats{
 		Items:          1,
