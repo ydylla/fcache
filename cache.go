@@ -420,7 +420,9 @@ func (c *cache) writeEntry(entry *cacheEntry, oldPath string, newPath string, fi
 		if err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return removedBytes, addedBytes, err
 		}
-		removedBytes = entry.size
+		if err == nil {
+			removedBytes = entry.size
+		}
 	}
 
 	_, shard := keyToShard(entry.key)
