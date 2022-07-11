@@ -231,10 +231,6 @@ func TestFileCache_Put(t *testing.T) {
 	if path1 == updatedPath {
 		t.Fatal("Expected paths to change but both are", path1)
 	}
-	ue, ok := c.entriesMap[1]
-	if !ok || ue.Value.(*cacheEntry).path != updatedPath {
-		t.Fatalf("Internal path was not updated. Expected %s but got %s", ue.Value.(*cacheEntry).path, updatedPath)
-	}
 
 	_, err = os.Stat(path1)
 	if !errors.Is(err, fs.ErrNotExist) {
