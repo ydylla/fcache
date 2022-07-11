@@ -1,3 +1,4 @@
+// Package fcache implements a file based persistent blob cache.
 package fcache
 
 import (
@@ -61,6 +62,7 @@ type EvictionError struct {
 	Error error
 }
 
+// Cache is safe for concurrent use by multiple goroutines.
 type Cache interface {
 	// Stats returns statistics about the cache.
 	// Like number of items, used bytes, number of hits and more.
