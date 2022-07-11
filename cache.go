@@ -22,11 +22,18 @@ type cacheEntry struct {
 	sequence uint64
 	size     int64
 	mtime    time.Time
-	expires  time.Time
+	ttl      time.Duration
+}
+
+func (e *cacheEntry) getExpires() time.Time {
+	if e.ttl <= 0 {
+		return time.Time{}
+	}
+	return e.mtime.Add(e.ttl)
 }
 
 func (e *cacheEntry) isExpired() bool {
-	return !e.expires.IsZero() && e.expires.Before(time.Now())
+	return e.ttl > 0 && time.Now().After(e.mtime.Add(e.ttl))
 }
 
 func (e *cacheEntry) isValid() bool {
@@ -89,7 +96,7 @@ func (c *cache) Has(key uint64) (*EntryInfo, error) {
 		defer entry.lock.RUnlock()
 
 		if entry.isValid() {
-			return &EntryInfo{Size: entry.size, Mtime: entry.mtime, Expires: entry.expires}, nil
+			return &EntryInfo{Size: entry.size, Mtime: entry.mtime, Expires: entry.getExpires()}, nil
 		}
 	}
 
@@ -116,7 +123,7 @@ func (c *cache) PutReader(key uint64, r io.Reader, ttl time.Duration) (*EntryInf
 		return nil, err
 	}
 
-	info := &EntryInfo{Size: entry.size, Mtime: entry.mtime, Expires: entry.expires}
+	info := &EntryInfo{Size: entry.size, Mtime: entry.mtime, Expires: entry.getExpires()}
 	return info, nil
 }
 
@@ -159,7 +166,7 @@ func (c *cache) GetReader(key uint64) (io.ReadSeekCloser, *EntryInfo, error) {
 		entry.lock.RUnlock()
 		return nil, nil, err
 	}
-	info := &EntryInfo{Size: entry.size, Mtime: entry.mtime, Expires: entry.expires}
+	info := &EntryInfo{Size: entry.size, Mtime: entry.mtime, Expires: entry.getExpires()}
 
 	entry.lock.RUnlock()
 	return f, info, nil
@@ -199,7 +206,7 @@ func (c *cache) GetReaderOrPut(key uint64, ttl time.Duration, filler Filler) (r 
 				return nil, nil, false, err
 			}
 
-			return r, &EntryInfo{Size: entry.size, Mtime: entry.mtime, Expires: entry.expires}, true, nil
+			return r, &EntryInfo{Size: entry.size, Mtime: entry.mtime, Expires: entry.getExpires()}, true, nil
 		}
 
 		// entry was deleted or is expired, so we need to do a put.
@@ -228,7 +235,7 @@ func (c *cache) GetReaderOrPut(key uint64, ttl time.Duration, filler Filler) (r 
 	if err != nil {
 		return nil, nil, false, err
 	}
-	info = &EntryInfo{Size: entry.size, Mtime: entry.mtime, Expires: entry.expires}
+	info = &EntryInfo{Size: entry.size, Mtime: entry.mtime, Expires: entry.getExpires()}
 
 	return r, info, false, nil
 }
@@ -252,7 +259,7 @@ func (c *cache) Delete(key uint64) (*EntryInfo, error) {
 		if err != nil {
 			return nil, err
 		}
-		return &EntryInfo{Size: entry.size, Mtime: entry.mtime, Expires: entry.expires}, nil
+		return &EntryInfo{Size: entry.size, Mtime: entry.mtime, Expires: entry.getExpires()}, nil
 	}
 
 	return nil, nil
@@ -287,7 +294,7 @@ func (c *cache) Clear(resetStats bool) error {
 }
 
 func (c *cache) buildEntryPath(entry *cacheEntry) string {
-	shard, name := toFilename(entry.key, entry.mtime, entry.expires, entry.sequence)
+	shard, name := toFilename(entry.key, entry.mtime, entry.getExpires(), entry.sequence)
 	return filepath.Join(c.cacheDir, shard, name)
 }
 
@@ -317,12 +324,6 @@ func (c *cache) putEntry(key uint64, ttl time.Duration, lock bool) (entry *cache
 
 	c.puts += 1
 
-	mtime := time.Now()
-	var expires time.Time
-	if ttl > 0 {
-		expires = mtime.Add(ttl)
-	}
-
 	item, exists := c.entriesMap[key]
 	if exists {
 		entry = item.Value.(*cacheEntry)
@@ -331,8 +332,8 @@ func (c *cache) putEntry(key uint64, ttl time.Duration, lock bool) (entry *cache
 		entry = &cacheEntry{key: key}
 	}
 
-	entry.mtime = mtime
-	entry.expires = expires
+	entry.mtime = time.Now()
+	entry.ttl = ttl
 	entry.onDisk = false
 	entry.sequence = c.sequence
 
@@ -528,7 +529,12 @@ func (c *cache) loadEntries() error {
 						return fmt.Errorf("failed to restore size from %s: %w", path, err)
 					}
 
-					ce := &cacheEntry{key: key, onDisk: true, sequence: sequence, size: info.Size(), mtime: mtime, expires: expires}
+					var ttl time.Duration
+					if !expires.IsZero() {
+						ttl = expires.Sub(mtime)
+					}
+
+					ce := &cacheEntry{key: key, onDisk: true, sequence: sequence, size: info.Size(), mtime: mtime, ttl: ttl}
 					c.entriesMap[ce.key] = c.entriesList.PushFront(ce)
 					c.usedSize += ce.size
 					if sequence > c.sequence {
