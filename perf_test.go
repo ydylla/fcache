@@ -1,9 +1,12 @@
 package fcache
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"math/rand"
+	"os"
+	"runtime"
 	"sync"
 	"testing"
 )
@@ -246,6 +249,75 @@ func BenchmarkCache_Parallel_Random_Load(b *testing.B) {
 			}
 			b.StartTimer()
 			runWorkers(b, cache, items, size, workers, randomLoadWorker)
+		}
+	})
+}
+
+func writeMemoryUsage(w io.Writer, header bool) {
+	if header {
+		_, err := w.Write([]byte("TotalAlloc,Sys,HeapAlloc,HeapInuse,HeapSys,StackInuse,StackSys,NumGC\n"))
+		if err != nil {
+			panic("Failed to write memory header: " + err.Error())
+		}
+		return
+	}
+
+	var m runtime.MemStats
+	runtime.ReadMemStats(&m)
+
+	toMiB := func(b uint64) float32 { return float32(b) / 1024.0 / 1024.0 }
+
+	line := fmt.Sprintf("%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%d\n",
+		toMiB(m.TotalAlloc),
+		toMiB(m.Sys),
+		toMiB(m.HeapAlloc),
+		toMiB(m.HeapInuse),
+		toMiB(m.HeapSys),
+		toMiB(m.StackInuse),
+		toMiB(m.StackSys),
+		m.NumGC,
+	)
+	_, err := w.Write([]byte(line))
+	if err != nil {
+		panic("Failed to write memory line: " + err.Error())
+	}
+}
+
+func BenchmarkCache_MemoryUsage(b *testing.B) {
+	items := int64(100000)
+	size := 5 * KiB
+	targetSize := size * Size(items)
+
+	err := os.Mkdir("benchmarks", 0770)
+	if err != nil && !errors.Is(err, os.ErrExist) {
+		b.Fatal(err)
+	}
+	f, err := os.Create("benchmarks/memory.csv")
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer func() {
+		err := f.Close()
+		if err != nil {
+			b.Fatal(err)
+		}
+	}()
+	writeMemoryUsage(f, true)
+
+	b.Run(fmt.Sprintf("%d_items_%d_bytes", items, size), func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			b.StopTimer()
+			dir := b.TempDir()
+			cache, err := Builder(dir, targetSize).Build()
+			if err != nil {
+				b.Fatal(err)
+			}
+			b.StartTimer()
+			runWorkers(b, cache, items, size, 2, putFreshKeyWorker)
+			b.StopTimer()
+			runtime.GC()
+			writeMemoryUsage(f, false)
+			b.StartTimer()
 		}
 	})
 }
