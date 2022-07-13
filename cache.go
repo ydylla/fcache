@@ -323,6 +323,7 @@ func (c *cache) putEntry(key uint64, ttl time.Duration, lock bool) (entry *cache
 	}
 
 	c.puts += 1
+	c.sequence += 1
 
 	item, exists := c.entriesMap[key]
 	if exists {
@@ -336,8 +337,6 @@ func (c *cache) putEntry(key uint64, ttl time.Duration, lock bool) (entry *cache
 	entry.ttl = ttl
 	entry.onDisk = false
 	entry.sequence = c.sequence
-
-	c.sequence += 1
 
 	if exists {
 		c.entriesList.MoveToFront(item)
@@ -365,7 +364,11 @@ func toFilename(key uint64, mtime time.Time, expires time.Time, sequence uint64)
 		expiresStr = strconv.FormatInt(expires.UnixMilli(), 36)
 	}
 	keyStr, shard := keyToShard(key)
-	return shard, keyStr + "_" + strconv.FormatInt(mtime.UnixMilli(), 36) + "_" + expiresStr + "_" + strconv.FormatUint(sequence, 36)
+	name := keyStr + "_" + strconv.FormatInt(mtime.UnixMilli(), 36) + "_" + expiresStr
+	if sequence > 0 {
+		name += "_" + strconv.FormatUint(sequence, 36)
+	}
+	return shard, name
 }
 
 func fromFilename(filename string) (key uint64, mtime time.Time, expires time.Time, sequence uint64, err error) {

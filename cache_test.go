@@ -109,7 +109,7 @@ func TestFileCache_toFilename(t *testing.T) {
 
 	shard2, name2 := toFilename(123, mtime, time.Time{}, 0)
 	assertString(t, "3f", shard2)
-	assertString(t, "3f_kzhcf8k8_+_0", name2)
+	assertString(t, "3f_kzhcf8k8_+", name2) // with no sequence it should match old format
 }
 
 func TestFileCache_fromFilename(t *testing.T) {
