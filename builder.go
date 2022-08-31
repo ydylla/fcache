@@ -106,6 +106,7 @@ func (b *builder) Build() (Cache, error) {
 		evictionInterval: b.evictionInterval,
 		dirMode:          dirMode,
 		fileMode:         b.fileMode,
+		locker:           NewLocker(),
 	}
 
 	if b.backgroundInit {

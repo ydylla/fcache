@@ -17,7 +17,6 @@ import (
 
 type cacheEntry struct {
 	key      uint64
-	lock     sync.RWMutex
 	onDisk   bool
 	sequence uint64
 	size     int64
@@ -58,6 +57,7 @@ type cache struct {
 	sequence    uint64
 	entriesList *list.List
 	entriesMap  map[uint64]*list.Element
+	locker      *Locker
 
 	evictionLock     sync.RWMutex
 	evictionInterval time.Duration
@@ -92,8 +92,8 @@ func (c *cache) Has(key uint64) (*EntryInfo, error) {
 
 	if ok {
 		entry := item.Value.(*cacheEntry)
-		entry.lock.RLock()
-		defer entry.lock.RUnlock()
+		c.locker.RLock(entry.key)
+		defer c.locker.RUnlock(entry.key)
 
 		if entry.isValid() {
 			return &EntryInfo{Size: entry.size, Mtime: entry.mtime, Expires: entry.getExpires()}, nil
@@ -110,7 +110,7 @@ func (c *cache) Put(key uint64, val []byte, ttl time.Duration) (*EntryInfo, erro
 func (c *cache) PutReader(key uint64, r io.Reader, ttl time.Duration) (*EntryInfo, error) {
 	entry, oldPath := c.putEntry(key, ttl, true)
 
-	entry.lock.Lock()
+	c.locker.Lock(entry.key)
 
 	newPath := c.buildEntryPath(entry)
 	removedBytes, addedBytes, err := c.writeEntry(entry, oldPath, newPath, FillerFunc(func(key uint64, sink io.Writer) (written int64, err error) {
@@ -149,10 +149,10 @@ func (c *cache) GetReader(key uint64) (io.ReadSeekCloser, *EntryInfo, error) {
 		return nil, nil, ErrNotFound
 	}
 
-	entry.lock.RLock()
+	c.locker.RLock(entry.key)
 
 	if !entry.isValid() {
-		entry.lock.RUnlock()
+		c.locker.RUnlock(entry.key)
 		return nil, nil, ErrNotFound
 	}
 	defer func() {
@@ -163,12 +163,12 @@ func (c *cache) GetReader(key uint64) (io.ReadSeekCloser, *EntryInfo, error) {
 
 	f, err := os.Open(c.buildEntryPath(entry))
 	if err != nil {
-		entry.lock.RUnlock()
+		c.locker.RUnlock(entry.key)
 		return nil, nil, err
 	}
 	info := &EntryInfo{Size: entry.size, Mtime: entry.mtime, Expires: entry.getExpires()}
 
-	entry.lock.RUnlock()
+	c.locker.RUnlock(entry.key)
 	return f, info, nil
 }
 
@@ -192,14 +192,14 @@ func (c *cache) GetReaderOrPut(key uint64, ttl time.Duration, filler Filler) (r 
 	c.lock.Lock()
 	entry := c.getEntry(key, false)
 	if entry != nil {
-		entry.lock.RLock()
+		c.locker.RLock(entry.key)
 
 		if entry.isValid() {
 			c.hits += 1
 			// we are sure entry exits & is valid,
 			// so we can release cache lock and continue like a normal get
 			c.lock.Unlock()
-			defer entry.lock.RUnlock()
+			defer c.locker.RUnlock(entry.key)
 
 			r, err = os.Open(c.buildEntryPath(entry))
 			if err != nil {
@@ -212,12 +212,12 @@ func (c *cache) GetReaderOrPut(key uint64, ttl time.Duration, filler Filler) (r 
 		// entry was deleted or is expired, so we need to do a put.
 		// release read lock, so we can upgrade to write lock on entry after the putEntry call
 		// we still hold cache lock which should prevent races
-		entry.lock.RUnlock()
+		c.locker.RUnlock(entry.key)
 	}
 
 	// update or create the entry and lock it for writing
 	entry, oldPath := c.putEntry(key, ttl, false)
-	entry.lock.Lock()
+	c.locker.Lock(entry.key)
 
 	// now we always have an entry write lock and can release the cache lock
 	// before actually filling the entry with data
@@ -460,7 +460,7 @@ func (c *cache) finalizePut(entry *cacheEntry, removedBytes int64, addedBytes in
 	if err != nil { // cleanup failed puts
 		_ = os.Remove(c.buildEntryPath(entry))
 		entry.onDisk = false
-		entry.lock.Unlock()
+		c.locker.Unlock(entry.key)
 
 		c.lock.Lock()
 		item, ok := c.entriesMap[entry.key]
@@ -471,7 +471,7 @@ func (c *cache) finalizePut(entry *cacheEntry, removedBytes int64, addedBytes in
 		c.lock.Unlock()
 
 	} else { // update usedSize
-		entry.lock.Unlock()
+		c.locker.Unlock(entry.key)
 
 		c.lock.Lock()
 		if removedBytes > 0 {
@@ -488,8 +488,8 @@ func (c *cache) finalizePut(entry *cacheEntry, removedBytes int64, addedBytes in
 }
 
 func (c *cache) removeFile(entry *cacheEntry) error {
-	entry.lock.Lock()
-	defer entry.lock.Unlock()
+	c.locker.Lock(entry.key)
+	defer c.locker.Unlock(entry.key)
 
 	if entry.onDisk {
 		err := os.Remove(c.buildEntryPath(entry))
