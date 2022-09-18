@@ -53,7 +53,7 @@ type cache struct {
 	deletes   int64
 	evictions int64
 
-	lock        sync.RWMutex
+	lock        sync.Mutex
 	sequence    uint64
 	entriesList *list.List
 	entriesMap  map[uint64]*list.Element
@@ -68,8 +68,8 @@ type cache struct {
 var _ Cache = (*cache)(nil)
 
 func (c *cache) Stats() Stats {
-	c.lock.RLock()
-	defer c.lock.RUnlock()
+	c.lock.Lock()
+	defer c.lock.Unlock()
 
 	return Stats{
 		Items:          c.entriesList.Len(),
@@ -85,10 +85,10 @@ func (c *cache) Stats() Stats {
 }
 
 func (c *cache) Has(key uint64) (*EntryInfo, error) {
-	c.lock.RLock()
+	c.lock.Lock()
 	item, ok := c.entriesMap[key]
 	c.has += 1
-	c.lock.RUnlock()
+	c.lock.Unlock()
 
 	if ok {
 		entry := item.Value.(*cacheEntry)
@@ -300,8 +300,8 @@ func (c *cache) buildEntryPath(entry *cacheEntry) string {
 
 func (c *cache) getEntry(key uint64, lock bool) *cacheEntry {
 	if lock {
-		c.lock.RLock()
-		defer c.lock.RUnlock()
+		c.lock.Lock()
+		defer c.lock.Unlock()
 	}
 
 	c.gets += 1
