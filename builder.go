@@ -50,7 +50,6 @@ type InitCallback func(cache Cache, err error)
 
 // WithBackgroundInit restores the cache state in background instead of in Build.
 // If initCallback is not nil it will be called once when all cache entries are restored or an error occurred.
-// For the duration of init all cache operations will block.
 func (b *builder) WithBackgroundInit(initCallback InitCallback) *builder {
 	b.backgroundInit = true
 	b.initCallback = initCallback

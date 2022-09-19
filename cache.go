@@ -503,9 +503,6 @@ func (c *cache) removeFile(entry *cacheEntry) error {
 }
 
 func (c *cache) loadEntries() error {
-	c.lock.Lock()
-	defer c.lock.Unlock()
-
 	shardDirs, err := os.ReadDir(c.cacheDir)
 	if err != nil {
 		return err
@@ -538,10 +535,26 @@ func (c *cache) loadEntries() error {
 					}
 
 					ce := &cacheEntry{key: key, onDisk: true, sequence: sequence, size: info.Size(), mtime: mtime, ttl: ttl}
-					c.entriesMap[ce.key] = c.entriesList.PushFront(ce)
-					c.usedSize += ce.size
-					if sequence > c.sequence {
-						c.sequence = sequence
+
+					c.lock.Lock()
+					existing, exists := c.entriesMap[ce.key]
+					if exists {
+						c.lock.Unlock()
+						newPath := c.buildEntryPath(existing.Value.(*cacheEntry))
+						if path != newPath {
+							// Remove old file in case the key was written to by a normal put during loading.
+							err = os.Remove(path)
+						}
+						if err != nil {
+							return fmt.Errorf("failed to remove overwritten entry at %s: %w", path, err)
+						}
+					} else {
+						c.entriesMap[ce.key] = c.entriesList.PushFront(ce)
+						c.usedSize += ce.size
+						if sequence > c.sequence {
+							c.sequence = sequence
+						}
+						c.lock.Unlock()
 					}
 				}
 			}
