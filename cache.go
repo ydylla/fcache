@@ -502,8 +502,20 @@ func (c *cache) removeFile(entry *cacheEntry) error {
 	return nil
 }
 
+func readDirWithoutSort(name string) ([]os.DirEntry, error) {
+	f, err := os.Open(name)
+	if err != nil {
+		return nil, err
+	}
+
+	dirs, err := f.ReadDir(-1)
+	_ = f.Close()
+
+	return dirs, err
+}
+
 func (c *cache) loadEntries() error {
-	shardDirs, err := os.ReadDir(c.cacheDir)
+	shardDirs, err := readDirWithoutSort(c.cacheDir)
 	if err != nil {
 		return err
 	}
@@ -511,7 +523,7 @@ func (c *cache) loadEntries() error {
 	for _, shardDir := range shardDirs {
 		if shardDir.IsDir() {
 			shardDirPath := filepath.Join(c.cacheDir, shardDir.Name())
-			entries, err := os.ReadDir(shardDirPath)
+			entries, err := readDirWithoutSort(shardDirPath)
 			if err != nil {
 				return err
 			}

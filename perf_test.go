@@ -321,3 +321,26 @@ func BenchmarkCache_MemoryUsage(b *testing.B) {
 		}
 	})
 }
+
+func BenchmarkCache_loadEntries(b *testing.B) {
+	items := int64(10000)
+	size := 1 * Byte
+	targetSize := size * Size(items)
+	workers := 5
+
+	dir := b.TempDir()
+	cache, err := Builder(dir, targetSize).Build()
+	if err != nil {
+		b.Fatal(err)
+	}
+	runWorkers(b, cache, items, size, workers, putFreshKeyWorker)
+
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		_, err := Builder(dir, targetSize).Build()
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
