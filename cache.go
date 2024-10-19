@@ -644,16 +644,16 @@ func (c *cache) evict() {
 		for _, entry := range deleted {
 			err := c.removeFile(entry)
 			if err != nil {
+				c.lock.Lock()
 				c.evictionErrors = append(c.evictionErrors, EvictionError{
 					Time:  time.Now(),
 					Error: err,
 				})
+				if len(c.evictionErrors) > 1000 {
+					c.evictionErrors = c.evictionErrors[1:]
+				}
+				c.lock.Unlock()
 			}
-		}
-		maxErrors := 1000
-		numErrors := len(c.evictionErrors)
-		if numErrors > maxErrors {
-			c.evictionErrors = c.evictionErrors[numErrors-maxErrors:]
 		}
 	} else {
 		c.lock.Unlock()

@@ -1256,3 +1256,37 @@ func TestFileCache_PutWhileReaderIsOpen(t *testing.T) {
 	// first get still reads initial data
 	assertReaderBytes(t, DATA, reader)
 }
+
+func TestFileCache_evict_ErrorOnFileRemove(t *testing.T) {
+	dir := t.TempDir()
+	ci, err := Builder(dir, 1*Byte).WithEvictionInterval(1 * time.Hour).Build()
+	assertNoError(t, err)
+	c := ci.(*cache)
+
+	// disable eviction
+	c.evictionTime = time.Now()
+
+	// insert and wait for expiry
+	_, err = c.Put(1, DATA, 1*time.Millisecond)
+	assertNoError(t, err)
+	time.Sleep(1 * time.Millisecond)
+
+	// remove cache dir to trigger error on evict
+	err = os.RemoveAll(dir)
+	assertNoError(t, err)
+
+	c.evictionTime = time.Now().Add(-1 * time.Hour)
+	c.evict()
+
+	s := c.Stats()
+	if s.Evictions != 1 {
+		t.Fatalf("Expected 1 eviction but got %d", s.Evictions)
+	}
+	if len(s.EvictionErrors) != 1 {
+		t.Fatalf("Expected 1 eviction error but got %d", len(s.EvictionErrors))
+	}
+	pathErr := s.EvictionErrors[0].Error.(*os.PathError)
+	if pathErr.Op != "remove" {
+		t.Fatalf("Expected op \"remove\" but got %s", pathErr.Op)
+	}
+}
