@@ -81,6 +81,7 @@ func (c *cache) Stats() Stats {
 		Deletes:        c.deletes,
 		Evictions:      c.evictions,
 		EvictionErrors: c.evictionErrors,
+		Locks:          c.locker.Size(),
 	}
 }
 

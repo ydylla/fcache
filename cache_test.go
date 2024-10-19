@@ -195,6 +195,7 @@ func TestFileCache_Put(t *testing.T) {
 		Deletes:        0,
 		Evictions:      0,
 		EvictionErrors: nil,
+		Locks:          0,
 	}, c.Stats())
 
 	data1, path1 := readFileForKey(t, dir, 1, e1.Mtime, e1.Expires)
@@ -247,6 +248,7 @@ func TestFileCache_Put(t *testing.T) {
 		Deletes:        0,
 		Evictions:      0,
 		EvictionErrors: nil,
+		Locks:          0,
 	}, c.Stats())
 }
 
@@ -306,6 +308,7 @@ func TestFileCache_Put_ErrorOnWriteCleanUp(t *testing.T) {
 		Deletes:        0,
 		Evictions:      0,
 		EvictionErrors: nil,
+		Locks:          0,
 	}, c.Stats())
 }
 
@@ -342,6 +345,7 @@ func TestFileCache_Has(t *testing.T) {
 		Deletes:        0,
 		Evictions:      0,
 		EvictionErrors: nil,
+		Locks:          0,
 	}, c.Stats())
 }
 
@@ -408,6 +412,7 @@ func TestFileCache_Get(t *testing.T) {
 		Deletes:        0,
 		Evictions:      0,
 		EvictionErrors: nil,
+		Locks:          0,
 	}, c.Stats())
 }
 
@@ -462,6 +467,7 @@ func TestFileCache_GetOrPut(t *testing.T) {
 		Deletes:        0,
 		Evictions:      0,
 		EvictionErrors: nil,
+		Locks:          0,
 	}, c.Stats())
 }
 
@@ -540,6 +546,7 @@ func TestFileCache_GetOrPut_OnlyWritesOnce(t *testing.T) {
 		Deletes:        0,
 		Evictions:      0,
 		EvictionErrors: nil,
+		Locks:          0,
 	}, c.Stats())
 }
 
@@ -622,6 +629,7 @@ func TestFileCache_GetOrPut_OnExpiredEntryOnlyWritesOnce(t *testing.T) {
 		Deletes:        0,
 		Evictions:      0,
 		EvictionErrors: nil,
+		Locks:          0,
 	}, c.Stats())
 }
 
@@ -702,6 +710,7 @@ func TestFileCache_GetOrPut_OnOtherKeyDoesNotBlock(t *testing.T) {
 		Deletes:        0,
 		Evictions:      0,
 		EvictionErrors: nil,
+		Locks:          0,
 	}, c.Stats())
 }
 
@@ -768,6 +777,7 @@ func TestFileCache_GetOrPut_ErrorOnWriteCleanUp(t *testing.T) {
 		Deletes:        0,
 		Evictions:      0,
 		EvictionErrors: nil,
+		Locks:          0,
 	}, c.Stats())
 }
 
@@ -815,6 +825,7 @@ func TestFileCache_Delete(t *testing.T) {
 		Deletes:        2,
 		Evictions:      0,
 		EvictionErrors: nil,
+		Locks:          0,
 	}, c.Stats())
 }
 
@@ -860,6 +871,7 @@ func TestFileCache_Clear(t *testing.T) {
 		Deletes:        3, // 1 manual + 2 from clear
 		Evictions:      0,
 		EvictionErrors: nil,
+		Locks:          0,
 	}, c.Stats())
 
 	_, err = c.Put(1, DATA, 0)
@@ -883,6 +895,7 @@ func TestFileCache_Clear(t *testing.T) {
 		Deletes:        0,
 		Evictions:      0,
 		EvictionErrors: nil,
+		Locks:          0,
 	}, c.Stats())
 }
 
@@ -926,6 +939,7 @@ func TestFileCache_Eviction(t *testing.T) {
 		Deletes:        0,
 		Evictions:      0,
 		EvictionErrors: nil,
+		Locks:          0,
 	}, c.Stats())
 
 	// fake past eviction, so evict actually runs
@@ -948,6 +962,7 @@ func TestFileCache_Eviction(t *testing.T) {
 		Deletes:        0,
 		Evictions:      2,
 		EvictionErrors: nil,
+		Locks:          0,
 	}, c.Stats())
 
 	_, err = c.Has(1)
@@ -991,6 +1006,7 @@ func TestFileCache_Eviction(t *testing.T) {
 		Deletes:        0,
 		Evictions:      2,
 		EvictionErrors: nil,
+		Locks:          0,
 	}, c.Stats())
 
 	// fake past eviction, so evict actually runs
@@ -1017,6 +1033,7 @@ func TestFileCache_Eviction(t *testing.T) {
 		Deletes:        0,
 		Evictions:      3,
 		EvictionErrors: nil,
+		Locks:          0,
 	}, c.Stats())
 }
 
@@ -1050,6 +1067,7 @@ func TestFileCache_EvictionOnPut(t *testing.T) {
 		Deletes:        0,
 		Evictions:      1,
 		EvictionErrors: nil,
+		Locks:          0,
 	}, c.Stats())
 
 	if !beforeEviction.Before(c.evictionTime) {
@@ -1074,6 +1092,7 @@ func TestFileCache_EvictionOnPut(t *testing.T) {
 		Deletes:        0,
 		Evictions:      2,
 		EvictionErrors: nil,
+		Locks:          0,
 	}, c.Stats())
 
 	if !beforeEviction.Before(c.evictionTime) {
@@ -1170,6 +1189,7 @@ func TestFileCache_Load(t *testing.T) {
 		Deletes:        0,
 		Evictions:      0,
 		EvictionErrors: nil,
+		Locks:          0,
 	}, c2.Stats())
 
 	if c2.sequence != 123 {

@@ -15,6 +15,9 @@ func TestLockerLock(t *testing.T) {
 	if holder.users != 1 {
 		t.Fatalf("expected users to be 1, got :%d", holder.users)
 	}
+	if l.Size() != 1 {
+		t.Fatalf("expected size to be 1, got: %d", l.Size())
+	}
 
 	chDone := make(chan struct{})
 	go func() {
@@ -38,6 +41,10 @@ func TestLockerLock(t *testing.T) {
 		t.Fatal("timed out waiting for lock users to be incremented")
 	}
 
+	if l.Size() != 1 {
+		t.Fatalf("expected size to be 1, got: %d", l.Size())
+	}
+
 	select {
 	case <-chDone:
 		t.Fatal("lock should not have returned while it was still held")
@@ -55,6 +62,9 @@ func TestLockerLock(t *testing.T) {
 	if holder.users != 1 {
 		t.Fatalf("expected users to be 1, got: %d", holder.users)
 	}
+	if l.Size() != 1 {
+		t.Fatalf("expected size to be 1, got: %d", l.Size())
+	}
 }
 
 func TestLockerUnlock(t *testing.T) {
@@ -62,6 +72,10 @@ func TestLockerUnlock(t *testing.T) {
 
 	l.Lock(1)
 	l.Unlock(1)
+
+	if l.Size() != 0 {
+		t.Fatalf("expected size to be 0, got: %d", l.Size())
+	}
 
 	chDone := make(chan struct{})
 	go func() {
@@ -73,6 +87,37 @@ func TestLockerUnlock(t *testing.T) {
 	case <-chDone:
 	case <-time.After(1 * time.Second):
 		t.Fatalf("lock should not be blocked")
+	}
+
+	if l.Size() != 1 {
+		t.Fatalf("expected size to be 1, got: %d", l.Size())
+	}
+}
+
+func TestLockerLockTwoKeys(t *testing.T) {
+	l := NewLocker()
+	l.Lock(1)
+
+	if l.Size() != 1 {
+		t.Fatalf("expected size to be 1, got: %d", l.Size())
+	}
+
+	l.Lock(2)
+
+	if l.Size() != 2 {
+		t.Fatalf("expected size to be 2, got: %d", l.Size())
+	}
+
+	l.Unlock(1)
+
+	if l.Size() != 1 {
+		t.Fatalf("expected size to be 1, got: %d", l.Size())
+	}
+
+	l.Unlock(2)
+
+	if l.Size() != 0 {
+		t.Fatalf("expected size to be 0, got: %d", l.Size())
 	}
 }
 

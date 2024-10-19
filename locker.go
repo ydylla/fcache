@@ -87,3 +87,10 @@ func (l *Locker) RUnlock(key uint64) {
 		lock.RUnlock()
 	}
 }
+
+// Size returns the number of internal locks
+func (l *Locker) Size() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return len(l.locks)
+}

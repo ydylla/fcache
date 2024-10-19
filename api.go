@@ -49,6 +49,7 @@ type Stats struct {
 	Deletes        int64
 	Evictions      int64
 	EvictionErrors []EvictionError
+	Locks          int
 }
 
 type EntryInfo struct {
