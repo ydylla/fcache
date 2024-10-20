@@ -47,6 +47,13 @@ func assertTime(t *testing.T, expected time.Time, value time.Time) {
 	}
 }
 
+func assertDuration(t *testing.T, expected time.Duration, value time.Duration) {
+	t.Helper()
+	if value != expected {
+		t.Fatalf("Expected '%s' but got '%s'\n", expected, value)
+	}
+}
+
 func assertInt(t *testing.T, expected int64, value int64) {
 	t.Helper()
 	if value != expected {
@@ -56,6 +63,18 @@ func assertInt(t *testing.T, expected int64, value int64) {
 
 func assertStruct(t *testing.T, expected interface{}, value interface{}) {
 	t.Helper()
+	expectedStr := fmt.Sprintf("%+v", expected)
+	valueStr := fmt.Sprintf("%+v", value)
+	if valueStr != expectedStr {
+		t.Fatalf("Expected '%s' but got '%s'\n", expectedStr, valueStr)
+	}
+}
+
+// ignores EvictionTime & EvictionDuration since they are not predictable
+func assertStats(t *testing.T, expected Stats, value Stats) {
+	t.Helper()
+	value.EvictionTime = time.Time{}
+	value.EvictionDuration = time.Duration(0)
 	expectedStr := fmt.Sprintf("%+v", expected)
 	valueStr := fmt.Sprintf("%+v", value)
 	if valueStr != expectedStr {
@@ -192,7 +211,7 @@ func TestFileCache_Put(t *testing.T) {
 	}
 	assertTime(t, e3.Mtime.Add(10*time.Minute), e3.Expires)
 
-	assertStruct(t, Stats{
+	assertStats(t, Stats{
 		Items:          3,
 		Bytes:          177,
 		Has:            0,
@@ -245,7 +264,7 @@ func TestFileCache_Put(t *testing.T) {
 		t.Fatalf("Old path %s was not removed\n", path1)
 	}
 
-	assertStruct(t, Stats{
+	assertStats(t, Stats{
 		Items:          3,
 		Bytes:          123,
 		Has:            0,
@@ -305,7 +324,7 @@ func TestFileCache_Put_ErrorOnWriteCleanUp(t *testing.T) {
 		t.Fatal("data should be nil but was:", err)
 	}
 
-	assertStruct(t, Stats{
+	assertStats(t, Stats{
 		Items:          0,
 		Bytes:          0,
 		Has:            1,
@@ -342,7 +361,7 @@ func TestFileCache_Has(t *testing.T) {
 		t.Fatalf("Expected nil but got %+v\n", notExisting)
 	}
 
-	assertStruct(t, Stats{
+	assertStats(t, Stats{
 		Items:          1,
 		Bytes:          59,
 		Has:            2,
@@ -409,7 +428,7 @@ func TestFileCache_Get(t *testing.T) {
 		t.Fatalf("Unexpected return for expired key: %+v, %+v, %+v", expiredData, expiredEntry, err)
 	}
 
-	assertStruct(t, Stats{
+	assertStats(t, Stats{
 		Items:          2,
 		Bytes:          118,
 		Has:            0,
@@ -464,7 +483,7 @@ func TestFileCache_GetOrPut(t *testing.T) {
 		t.Fatal("Second GetOrPut should be a cache hit")
 	}
 
-	assertStruct(t, Stats{
+	assertStats(t, Stats{
 		Items:          1,
 		Bytes:          59,
 		Has:            0,
@@ -543,7 +562,7 @@ func TestFileCache_GetOrPut_OnlyWritesOnce(t *testing.T) {
 	t.Log("Unlock")
 	wgDone.Wait()
 
-	assertStruct(t, Stats{
+	assertStats(t, Stats{
 		Items:          1,
 		Bytes:          59,
 		Has:            0,
@@ -626,7 +645,7 @@ func TestFileCache_GetOrPut_OnExpiredEntryOnlyWritesOnce(t *testing.T) {
 	t.Log("Unlock")
 	wgDone.Wait()
 
-	assertStruct(t, Stats{
+	assertStats(t, Stats{
 		Items:          1,
 		Bytes:          59,
 		Has:            0,
@@ -707,7 +726,7 @@ func TestFileCache_GetOrPut_OnOtherKeyDoesNotBlock(t *testing.T) {
 	t.Log("Unlock")
 	wgDone.Wait()
 
-	assertStruct(t, Stats{
+	assertStats(t, Stats{
 		Items:          2,
 		Bytes:          118,
 		Has:            0,
@@ -774,7 +793,7 @@ func TestFileCache_GetOrPut_ErrorOnWriteCleanUp(t *testing.T) {
 		t.Fatal("data should be nil but was:", err)
 	}
 
-	assertStruct(t, Stats{
+	assertStats(t, Stats{
 		Items:          0,
 		Bytes:          0,
 		Has:            1,
@@ -822,7 +841,7 @@ func TestFileCache_Delete(t *testing.T) {
 		t.Fatal("Has should respond with ErrNotFound error but was:", err)
 	}
 
-	assertStruct(t, Stats{
+	assertStats(t, Stats{
 		Items:          0,
 		Bytes:          0,
 		Has:            1,
@@ -888,7 +907,7 @@ func TestFileCache_Clear(t *testing.T) {
 		t.Fatalf("Expected %d shard dirs but got %d\n", 1296, dirs)
 	}
 
-	assertStruct(t, Stats{
+	assertStats(t, Stats{
 		Items:          0,
 		Bytes:          0,
 		Has:            1,
@@ -916,7 +935,7 @@ func TestFileCache_Clear(t *testing.T) {
 		t.Fatalf("Expected %d shard dirs but got %d\n", 1296, dirs)
 	}
 
-	assertStruct(t, Stats{
+	assertStats(t, Stats{
 		Items:          0,
 		Bytes:          0,
 		Has:            0,
@@ -959,8 +978,11 @@ func TestFileCache_Eviction(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 
 	// eviction was not called on put because evictionInterval did not pass
+	stats := c.Stats()
 	assertTime(t, fakeEvictionTime, c.evictionTime)
-	assertStruct(t, Stats{
+	assertTime(t, fakeEvictionTime, stats.EvictionTime)
+	assertDuration(t, time.Duration(0), stats.EvictionDuration)
+	assertStats(t, Stats{
 		Items:          4,
 		Bytes:          236,
 		Has:            0,
@@ -971,19 +993,29 @@ func TestFileCache_Eviction(t *testing.T) {
 		Evictions:      0,
 		EvictionErrors: nil,
 		Locks:          0,
-	}, c.Stats())
+	}, stats)
 
 	// fake past eviction, so evict actually runs
 	c.evictionTime = time.Now().Add(-2 * time.Hour)
+	// fake duration so we can check assigment, sometimes it's 0
+	c.evictionDuration = -1
 
 	beforeEviction := time.Now().Add(-1 * time.Millisecond)
 	c.evict()
+	stats = c.Stats()
 
 	if !beforeEviction.Before(c.evictionTime) {
 		t.Fatalf("evictionTime was not updated: %v", c.evictionTime)
 	}
 
-	assertStruct(t, Stats{
+	if !beforeEviction.Before(stats.EvictionTime) {
+		t.Fatalf("stats.EvictionTime was not updated: %v", stats.EvictionTime)
+	}
+	if stats.EvictionDuration < 0 || stats.EvictionDuration > 1*time.Second {
+		t.Fatalf("Unexpected stats.EvictionDuration value: %v", stats.EvictionDuration)
+	}
+
+	assertStats(t, Stats{
 		Items:          2,
 		Bytes:          118,
 		Has:            0,
@@ -994,7 +1026,7 @@ func TestFileCache_Eviction(t *testing.T) {
 		Evictions:      2,
 		EvictionErrors: nil,
 		Locks:          0,
-	}, c.Stats())
+	}, stats)
 
 	_, err = c.Has(1)
 	if err != ErrNotFound {
@@ -1027,7 +1059,7 @@ func TestFileCache_Eviction(t *testing.T) {
 
 	time.Sleep(2 * time.Millisecond)
 
-	assertStruct(t, Stats{
+	assertStats(t, Stats{
 		Items:          3,
 		Bytes:          177,
 		Has:            4,
@@ -1054,7 +1086,7 @@ func TestFileCache_Eviction(t *testing.T) {
 		t.Fatal("entry 5 file was not removed")
 	}
 
-	assertStruct(t, Stats{
+	assertStats(t, Stats{
 		Items:          2,
 		Bytes:          118,
 		Has:            5,
@@ -1088,7 +1120,7 @@ func TestFileCache_EvictionOnPut(t *testing.T) {
 	// give async evict some time to finish
 	time.Sleep(25 * time.Millisecond)
 
-	assertStruct(t, Stats{
+	assertStats(t, Stats{
 		Items:          2,
 		Bytes:          118,
 		Has:            0,
@@ -1113,7 +1145,7 @@ func TestFileCache_EvictionOnPut(t *testing.T) {
 	// give async evict some time to finish
 	time.Sleep(25 * time.Millisecond)
 
-	assertStruct(t, Stats{
+	assertStats(t, Stats{
 		Items:          2,
 		Bytes:          118,
 		Has:            0,
@@ -1210,7 +1242,7 @@ func TestFileCache_Load(t *testing.T) {
 		t.Fatal("entry 4 should have been expired", err)
 	}
 
-	assertStruct(t, Stats{
+	assertStats(t, Stats{
 		Items:          4,
 		Bytes:          236,
 		Has:            3,

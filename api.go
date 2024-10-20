@@ -40,16 +40,18 @@ func (f FillerFunc) WriteCacheData(key uint64, sink io.Writer) (written int64, e
 }
 
 type Stats struct {
-	Items          int
-	Bytes          int64
-	Has            int64
-	Gets           int64
-	Hits           int64
-	Puts           int64
-	Deletes        int64
-	Evictions      int64
-	EvictionErrors []EvictionError
-	Locks          int
+	Items            int
+	Bytes            int64
+	Has              int64
+	Gets             int64
+	Hits             int64
+	Puts             int64
+	Deletes          int64
+	Evictions        int64
+	EvictionTime     time.Time
+	EvictionDuration time.Duration
+	EvictionErrors   []EvictionError
+	Locks            int
 }
 
 type EntryInfo struct {

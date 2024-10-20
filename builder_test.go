@@ -79,7 +79,7 @@ func TestBuilder_WithBackgroundInit(t *testing.T) {
 
 	assertStruct(t, c2, cacheFromInit)
 
-	assertStruct(t, Stats{
+	assertStats(t, Stats{
 		Items:          1,
 		Bytes:          11,
 		Has:            0,

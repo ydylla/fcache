@@ -74,26 +74,29 @@ type cache struct {
 	evictionLock     sync.RWMutex
 	evictionInterval time.Duration
 	evictionTime     time.Time
+	evictionDuration time.Duration
 	evictionErrors   []EvictionError
 }
 
 var _ Cache = (*cache)(nil)
 
 func (c *cache) Stats() Stats {
-	c.lock.Lock()
-	defer c.lock.Unlock()
+	c.lock.RLock()
+	defer c.lock.RUnlock()
 
 	return Stats{
-		Items:          c.entriesList.Len(),
-		Bytes:          c.usedSize,
-		Has:            c.has,
-		Gets:           c.gets,
-		Hits:           c.hits,
-		Puts:           c.puts,
-		Deletes:        c.deletes,
-		Evictions:      c.evictions,
-		EvictionErrors: c.evictionErrors,
-		Locks:          c.locker.Size(),
+		Items:            c.entriesList.Len(),
+		Bytes:            c.usedSize,
+		Has:              c.has,
+		Gets:             c.gets,
+		Hits:             c.hits,
+		Puts:             c.puts,
+		Deletes:          c.deletes,
+		Evictions:        c.evictions,
+		EvictionTime:     c.evictionTime,
+		EvictionDuration: c.evictionDuration,
+		EvictionErrors:   c.evictionErrors,
+		Locks:            c.locker.Size(),
 	}
 }
 
@@ -554,6 +557,8 @@ func (c *cache) evict() {
 
 	c.lock.RLock()
 
+	start := time.Now()
+
 	if c.usedSize > c.targetSize {
 
 		var expired []*list.Element
@@ -631,4 +636,5 @@ func (c *cache) evict() {
 	}
 
 	c.evictionTime = time.Now()
+	c.evictionDuration = time.Since(start)
 }
