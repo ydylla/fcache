@@ -47,6 +47,13 @@ func assertTime(t *testing.T, expected time.Time, value time.Time) {
 	}
 }
 
+func assertInt(t *testing.T, expected int64, value int64) {
+	t.Helper()
+	if value != expected {
+		t.Fatalf("Expected %d but got %d\n", expected, value)
+	}
+}
+
 func assertStruct(t *testing.T, expected interface{}, value interface{}) {
 	t.Helper()
 	expectedStr := fmt.Sprintf("%+v", expected)
@@ -70,7 +77,7 @@ func assertReaderBytes(t *testing.T, expected []byte, r io.ReadCloser) {
 	}
 }
 
-func findFileForKey(t *testing.T, dir string, key uint64, mtime time.Time, expires time.Time) (path string, err error) {
+func findFileForKey(t *testing.T, dir string, key uint64, mtime int64, expires int64) (path string, err error) {
 	t.Helper()
 	shard, name := toFilename(key, mtime, expires, 0)
 	parts := strings.Split(name, "_")
@@ -89,7 +96,7 @@ func findFileForKey(t *testing.T, dir string, key uint64, mtime time.Time, expir
 	return "", fmt.Errorf("could not find file with prefix %s in %s", prefix, shardDir)
 }
 
-func readFileForKey(t *testing.T, dir string, key uint64, mtime time.Time, expires time.Time) (data []byte, path string) {
+func readFileForKey(t *testing.T, dir string, key uint64, mtime int64, expires int64) (data []byte, path string) {
 	t.Helper()
 	file, err := findFileForKey(t, dir, key, mtime, expires)
 	assertNoError(t, err)
@@ -99,15 +106,15 @@ func readFileForKey(t *testing.T, dir string, key uint64, mtime time.Time, expir
 }
 
 func TestFileCache_toFilename(t *testing.T) {
-	mtime := time.Unix(1644519455, 0)
-	expires := time.Unix(1644519465, 0)
+	mtime := time.Unix(1644519455, 0).UnixMilli()
+	expires := time.Unix(1644519465, 0).UnixMilli()
 	sequence := uint64(1234)
 
 	shard1, name1 := toFilename(1, mtime, expires, sequence)
 	assertString(t, "01", shard1)
 	assertString(t, "1_kzhcf8k8_kzhcfga0_ya", name1)
 
-	shard2, name2 := toFilename(123, mtime, time.Time{}, 0)
+	shard2, name2 := toFilename(123, mtime, 0, 0)
 	assertString(t, "3f", shard2)
 	assertString(t, "3f_kzhcf8k8_+", name2) // with no sequence it should match old format
 }
@@ -118,8 +125,8 @@ func TestFileCache_fromFilename(t *testing.T) {
 	if key1 != 1 {
 		t.Fatal("Expected 1 but got:", key1)
 	}
-	assertTime(t, time.Unix(1644519455, 0), mtime1)
-	assertTime(t, time.Unix(1644519465, 0), expires1)
+	assertInt(t, 1644519455000, mtime1)
+	assertInt(t, 1644519465000, expires1)
 	if sequence1 != 0 {
 		t.Fatal("Expected 0 but got:", sequence1)
 	}
@@ -129,8 +136,8 @@ func TestFileCache_fromFilename(t *testing.T) {
 	if key2 != 123 {
 		t.Fatal("Expected 123 but got:", key2)
 	}
-	assertTime(t, time.Unix(1644519455, 0), mtime2)
-	assertTime(t, time.Time{}, expires2)
+	assertInt(t, 1644519455000, mtime2)
+	assertInt(t, 0, expires2)
 	if sequence2 != 0 {
 		t.Fatal("Expected 0 but got:", sequence2)
 	}
@@ -140,8 +147,8 @@ func TestFileCache_fromFilename(t *testing.T) {
 	if key3 != 123 {
 		t.Fatal("Expected 123 but got:", key3)
 	}
-	assertTime(t, time.Unix(1644519455, 0), mtime3)
-	assertTime(t, time.Time{}, expires3)
+	assertInt(t, 1644519455000, mtime3)
+	assertInt(t, 0, expires3)
 	if sequence3 != 1234 {
 		t.Fatal("Expected 1234 but got:", sequence3)
 	}
@@ -165,7 +172,7 @@ func TestFileCache_Put(t *testing.T) {
 	}
 	assertTime(t, time.Time{}, e1.Expires)
 
-	e2, err := c.Put(uint64(2), DATA, -1)
+	e2, err := c.Put(uint64(2), DATA, -time.Millisecond)
 	assertNoError(t, err)
 	if e2.Size != 59 {
 		t.Fatal("Expected size 59 for e2 but got", e2.Size)
@@ -173,7 +180,7 @@ func TestFileCache_Put(t *testing.T) {
 	if !(e2.Mtime.After(start) && e2.Mtime.Before(time.Now().Add(time.Millisecond))) {
 		t.Fatal("Unexpected mtime for e2", e2.Mtime)
 	}
-	assertTime(t, time.Time{}, e2.Expires)
+	assertTime(t, e2.Mtime.Add(-time.Millisecond), e2.Expires)
 
 	e3, err := c.PutReader(uint64(3), bytes.NewReader(DATA), 10*time.Minute)
 	assertNoError(t, err)
@@ -198,17 +205,17 @@ func TestFileCache_Put(t *testing.T) {
 		Locks:          0,
 	}, c.Stats())
 
-	data1, path1 := readFileForKey(t, dir, 1, e1.Mtime, e1.Expires)
+	data1, path1 := readFileForKey(t, dir, 1, e1.Mtime.UnixMilli(), 0)
 	if !bytes.Equal(data1, DATA) {
 		t.Fatal("Expected data for e1 got", data1)
 	}
 
-	data2, _ := readFileForKey(t, dir, 2, e2.Mtime, e2.Expires)
+	data2, _ := readFileForKey(t, dir, 2, e2.Mtime.UnixMilli(), e2.Expires.UnixMilli())
 	if !bytes.Equal(data2, DATA) {
 		t.Fatal("Expected data for e2 got", data2)
 	}
 
-	data3, _ := readFileForKey(t, dir, 3, e3.Mtime, e3.Expires)
+	data3, _ := readFileForKey(t, dir, 3, e3.Mtime.UnixMilli(), e3.Expires.UnixMilli())
 	if !bytes.Equal(data3, DATA) {
 		t.Fatal("Expected data for e3 got", data3)
 	}
@@ -224,7 +231,7 @@ func TestFileCache_Put(t *testing.T) {
 	}
 	assertTime(t, updated1.Mtime.Add(123*time.Minute), updated1.Expires)
 
-	updatedData, updatedPath := readFileForKey(t, dir, 1, updated1.Mtime, updated1.Expires)
+	updatedData, updatedPath := readFileForKey(t, dir, 1, updated1.Mtime.UnixMilli(), updated1.Expires.UnixMilli())
 	if !bytes.Equal(updatedData, newData) {
 		t.Fatal("Expected updatedData for updated1 got", updatedData)
 	}
@@ -304,7 +311,7 @@ func TestFileCache_Put_ErrorOnWriteCleanUp(t *testing.T) {
 		Has:            1,
 		Gets:           1,
 		Hits:           0,
-		Puts:           1,
+		Puts:           0,
 		Deletes:        0,
 		Evictions:      0,
 		EvictionErrors: nil,
@@ -773,7 +780,7 @@ func TestFileCache_GetOrPut_ErrorOnWriteCleanUp(t *testing.T) {
 		Has:            1,
 		Gets:           2,
 		Hits:           0,
-		Puts:           1,
+		Puts:           0,
 		Deletes:        0,
 		Evictions:      0,
 		EvictionErrors: nil,
@@ -796,7 +803,7 @@ func TestFileCache_Delete(t *testing.T) {
 	entry, err := c.Put(1, DATA, 0)
 	assertNoError(t, err)
 
-	_, p := readFileForKey(t, dir, 1, entry.Mtime, entry.Expires)
+	_, p := readFileForKey(t, dir, 1, entry.Mtime.UnixMilli(), 0)
 	_, err = os.Stat(p)
 	assertNoError(t, err)
 
@@ -969,7 +976,7 @@ func TestFileCache_Eviction(t *testing.T) {
 	if err != ErrNotFound {
 		t.Fatal("entry 1 should have been evicted")
 	}
-	_, err = findFileForKey(t, dir, 1, e1.Mtime, e1.Expires)
+	_, err = findFileForKey(t, dir, 1, e1.Mtime.UnixMilli(), 0)
 	if err == nil {
 		t.Fatal("entry 1 file was not removed")
 	}
@@ -982,7 +989,7 @@ func TestFileCache_Eviction(t *testing.T) {
 	if err != ErrNotFound {
 		t.Fatal("entry 3 should have been evicted")
 	}
-	_, err = findFileForKey(t, dir, 3, e3.Mtime, e3.Expires)
+	_, err = findFileForKey(t, dir, 3, e3.Mtime.UnixMilli(), 0)
 	if err == nil {
 		t.Fatal("entry 3 file was not removed")
 	}
@@ -1018,7 +1025,7 @@ func TestFileCache_Eviction(t *testing.T) {
 	if err != ErrNotFound {
 		t.Fatal("entry 5 should have been evicted")
 	}
-	_, err = findFileForKey(t, dir, 5, e5.Mtime, e5.Expires)
+	_, err = findFileForKey(t, dir, 5, e5.Mtime.UnixMilli(), e5.Expires.UnixMilli())
 	if err == nil {
 		t.Fatal("entry 5 file was not removed")
 	}
@@ -1103,7 +1110,7 @@ func TestFileCache_EvictionOnPut(t *testing.T) {
 	if err != ErrNotFound {
 		t.Fatal("entry 1 should have been evicted")
 	}
-	_, err = findFileForKey(t, dir, 1, e1.Mtime, e1.Expires)
+	_, err = findFileForKey(t, dir, 1, e1.Mtime.UnixMilli(), 0)
 	if err == nil {
 		t.Fatal("entry 1 file was not removed")
 	}
@@ -1112,7 +1119,7 @@ func TestFileCache_EvictionOnPut(t *testing.T) {
 	if err != ErrNotFound {
 		t.Fatal("entry 2 should have been evicted")
 	}
-	_, err = findFileForKey(t, dir, 2, e2.Mtime, e2.Expires)
+	_, err = findFileForKey(t, dir, 2, e2.Mtime.UnixMilli(), 0)
 	if err == nil {
 		t.Fatal("entry 2 file was not removed")
 	}
@@ -1141,7 +1148,7 @@ func TestFileCache_Load(t *testing.T) {
 
 	mtime4 := time.Now().Add(-24 * time.Hour)
 	expires4 := time.Now().Add(-1 * time.Hour)
-	shard, name := toFilename(4, mtime4, expires4, 123)
+	shard, name := toFilename(4, mtime4.UnixMilli(), expires4.UnixMilli(), 123)
 	err = os.MkdirAll(filepath.Join(dir, shard), 0750)
 	assertNoError(t, err)
 	path4 := filepath.Join(dir, shard, name)
@@ -1192,8 +1199,8 @@ func TestFileCache_Load(t *testing.T) {
 		Locks:          0,
 	}, c2.Stats())
 
-	if c2.sequence != 123 {
-		t.Fatal("cache should have sequence of 123 but has", c2.sequence)
+	if c2.sequence.Load() != 0 {
+		t.Fatal("cache should have sequence of 0 but has", c2.sequence.Load())
 	}
 }
 

@@ -12,31 +12,43 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
 type cacheEntry struct {
 	key      uint64
-	onDisk   bool
 	sequence uint64
 	size     int64
-	mtime    time.Time
-	ttl      time.Duration
+	mtime    int64
+	expires  int64
 }
 
 func (e *cacheEntry) getExpires() time.Time {
-	if e.ttl <= 0 {
+	if e.expires <= 0 {
 		return time.Time{}
 	}
-	return e.mtime.Add(e.ttl)
+	return time.UnixMilli(e.expires)
+}
+
+func (e *cacheEntry) getMtime() time.Time {
+	return time.UnixMilli(e.mtime)
 }
 
 func (e *cacheEntry) isExpired() bool {
-	return e.ttl > 0 && time.Now().After(e.mtime.Add(e.ttl))
+	return e.expires > 0 && time.Now().UnixMilli() > e.expires
 }
 
 func (e *cacheEntry) isValid() bool {
-	return e.onDisk && !e.isExpired()
+	return !e.isExpired()
+}
+
+func (e *cacheEntry) Info() *EntryInfo {
+	info := &EntryInfo{Size: e.size, Mtime: time.UnixMilli(e.mtime)}
+	if e.expires > 0 {
+		info.Expires = time.UnixMilli(e.expires)
+	}
+	return info
 }
 
 type cache struct {
@@ -53,8 +65,8 @@ type cache struct {
 	deletes   int64
 	evictions int64
 
-	lock        sync.Mutex
-	sequence    uint64
+	sequence    atomic.Uint64
+	lock        sync.RWMutex
 	entriesList *list.List
 	entriesMap  map[uint64]*list.Element
 	locker      *Locker
@@ -97,7 +109,7 @@ func (c *cache) Has(key uint64) (*EntryInfo, error) {
 		defer c.locker.RUnlock(entry.key)
 
 		if entry.isValid() {
-			return &EntryInfo{Size: entry.size, Mtime: entry.mtime, Expires: entry.getExpires()}, nil
+			return &EntryInfo{Size: entry.size, Mtime: entry.getMtime(), Expires: entry.getExpires()}, nil
 		}
 	}
 
@@ -109,23 +121,23 @@ func (c *cache) Put(key uint64, val []byte, ttl time.Duration) (*EntryInfo, erro
 }
 
 func (c *cache) PutReader(key uint64, r io.Reader, ttl time.Duration) (*EntryInfo, error) {
-	entry, oldPath := c.putEntry(key, ttl, true)
+	c.locker.Lock(key)
+	defer c.locker.Unlock(key)
 
-	c.locker.Lock(entry.key)
+	mtime, expires, sequence, newPath := c.preparePut(key, ttl)
 
-	newPath := c.buildEntryPath(entry)
-	removedBytes, addedBytes, err := c.writeEntry(entry, oldPath, newPath, FillerFunc(func(key uint64, sink io.Writer) (written int64, err error) {
+	addedBytes, err := c.writeEntry(key, newPath, FillerFunc(func(key uint64, sink io.Writer) (written int64, err error) {
 		return io.Copy(sink, r)
 	}))
-
-	defer c.finalizePut(entry, removedBytes, addedBytes, err)
-
 	if err != nil {
 		return nil, err
 	}
 
-	info := &EntryInfo{Size: entry.size, Mtime: entry.mtime, Expires: entry.getExpires()}
-	return info, nil
+	entry, err := c.finalizePut(key, mtime, expires, sequence, addedBytes)
+	if err != nil {
+		return nil, err
+	}
+	return entry.Info(), nil
 }
 
 func (c *cache) Get(key uint64) ([]byte, *EntryInfo, error) {
@@ -145,32 +157,27 @@ func (c *cache) Get(key uint64) ([]byte, *EntryInfo, error) {
 }
 
 func (c *cache) GetReader(key uint64) (io.ReadSeekCloser, *EntryInfo, error) {
-	entry := c.getEntry(key, true)
+	c.locker.RLock(key)
+	defer c.locker.RUnlock(key)
+
+	entry := c.getEntry(key)
 	if entry == nil {
 		return nil, nil, ErrNotFound
 	}
 
-	c.locker.RLock(entry.key)
-
 	if !entry.isValid() {
-		c.locker.RUnlock(entry.key)
 		return nil, nil, ErrNotFound
 	}
-	defer func() {
-		c.lock.Lock()
-		c.hits += 1
-		c.lock.Unlock()
-	}()
 
-	f, err := os.Open(c.buildEntryPath(entry))
+	c.lock.Lock()
+	c.hits += 1
+	c.lock.Unlock()
+
+	f, err := os.Open(c.buildEntryPath(entry.key, entry.mtime, entry.expires, entry.sequence))
 	if err != nil {
-		c.locker.RUnlock(entry.key)
 		return nil, nil, err
 	}
-	info := &EntryInfo{Size: entry.size, Mtime: entry.mtime, Expires: entry.getExpires()}
-
-	c.locker.RUnlock(entry.key)
-	return f, info, nil
+	return f, entry.Info(), nil
 }
 
 func (c *cache) GetOrPut(key uint64, ttl time.Duration, filler Filler) (data []byte, info *EntryInfo, hit bool, err error) {
@@ -190,44 +197,38 @@ func (c *cache) GetOrPut(key uint64, ttl time.Duration, filler Filler) (data []b
 }
 
 func (c *cache) GetReaderOrPut(key uint64, ttl time.Duration, filler Filler) (r io.ReadSeekCloser, info *EntryInfo, hit bool, err error) {
-	c.lock.Lock()
-	entry := c.getEntry(key, false)
-	if entry != nil {
-		c.locker.RLock(entry.key)
+retry:
+	c.locker.RLock(key)
+	entry := c.getEntry(key)
+	if entry != nil && entry.isValid() {
+		c.hits += 1
+		// we are sure entry exits & is valid,
+		// so we can continue like a normal get
+		defer c.locker.RUnlock(key)
 
-		if entry.isValid() {
-			c.hits += 1
-			// we are sure entry exits & is valid,
-			// so we can release cache lock and continue like a normal get
-			c.lock.Unlock()
-			defer c.locker.RUnlock(entry.key)
-
-			r, err = os.Open(c.buildEntryPath(entry))
-			if err != nil {
-				return nil, nil, false, err
-			}
-
-			return r, &EntryInfo{Size: entry.size, Mtime: entry.mtime, Expires: entry.getExpires()}, true, nil
+		r, err = os.Open(c.buildEntryPath(entry.key, entry.mtime, entry.expires, entry.sequence))
+		if err != nil {
+			return nil, nil, false, err
 		}
 
-		// entry was deleted or is expired, so we need to do a put.
-		// release read lock, so we can upgrade to write lock on entry after the putEntry call
-		// we still hold cache lock which should prevent races
-		c.locker.RUnlock(entry.key)
+		return r, entry.Info(), true, nil
 	}
 
-	// update or create the entry and lock it for writing
-	entry, oldPath := c.putEntry(key, ttl, false)
-	c.locker.Lock(entry.key)
+	// entry does not exist or is expired, so we need to do a put.
+	// Upgrade the read lock to a write lock, if this fails another goroutine is already doing a put.
+	if !c.locker.Upgrade(key) {
+		c.locker.RUnlock(key)
+		goto retry
+	}
+	defer c.locker.Unlock(key)
 
-	// now we always have an entry write lock and can release the cache lock
-	// before actually filling the entry with data
-	c.lock.Unlock()
+	mtime, expires, sequence, newPath := c.preparePut(key, ttl)
 
-	newPath := c.buildEntryPath(entry)
-	removedBytes, addedBytes, err := c.writeEntry(entry, oldPath, newPath, filler) // pass in old entry path before putEntry modified the entry
-	defer c.finalizePut(entry, removedBytes, addedBytes, err)
-
+	addedBytes, err := c.writeEntry(key, newPath, filler)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	entry, err = c.finalizePut(key, mtime, expires, sequence, addedBytes)
 	if err != nil {
 		return nil, nil, false, err
 	}
@@ -236,12 +237,14 @@ func (c *cache) GetReaderOrPut(key uint64, ttl time.Duration, filler Filler) (r 
 	if err != nil {
 		return nil, nil, false, err
 	}
-	info = &EntryInfo{Size: entry.size, Mtime: entry.mtime, Expires: entry.getExpires()}
 
-	return r, info, false, nil
+	return r, entry.Info(), false, nil
 }
 
 func (c *cache) Delete(key uint64) (*EntryInfo, error) {
+	c.locker.Lock(key)
+	defer c.locker.Unlock(key)
+
 	c.lock.Lock()
 	c.deletes += 1
 	item, ok := c.entriesMap[key]
@@ -256,11 +259,11 @@ func (c *cache) Delete(key uint64) (*EntryInfo, error) {
 	c.lock.Unlock()
 
 	if ok {
-		err := c.removeFile(entry)
+		err := os.Remove(c.buildEntryPath(entry.key, entry.mtime, entry.expires, entry.sequence))
 		if err != nil {
 			return nil, err
 		}
-		return &EntryInfo{Size: entry.size, Mtime: entry.mtime, Expires: entry.getExpires()}, nil
+		return entry.Info(), nil
 	}
 
 	return nil, nil
@@ -294,16 +297,14 @@ func (c *cache) Clear(resetStats bool) error {
 	return nil
 }
 
-func (c *cache) buildEntryPath(entry *cacheEntry) string {
-	shard, name := toFilename(entry.key, entry.mtime, entry.getExpires(), entry.sequence)
+func (c *cache) buildEntryPath(key uint64, mtime int64, expires int64, sequence uint64) string {
+	shard, name := toFilename(key, mtime, expires, sequence)
 	return filepath.Join(c.cacheDir, shard, name)
 }
 
-func (c *cache) getEntry(key uint64, lock bool) *cacheEntry {
-	if lock {
-		c.lock.Lock()
-		defer c.lock.Unlock()
-	}
+func (c *cache) getEntry(key uint64) *cacheEntry {
+	c.lock.Lock()
+	defer c.lock.Unlock()
 
 	c.gets += 1
 
@@ -317,37 +318,6 @@ func (c *cache) getEntry(key uint64, lock bool) *cacheEntry {
 	return nil
 }
 
-func (c *cache) putEntry(key uint64, ttl time.Duration, lock bool) (entry *cacheEntry, oldPath string) {
-	if lock {
-		c.lock.Lock()
-		defer c.lock.Unlock()
-	}
-
-	c.puts += 1
-	c.sequence += 1
-
-	item, exists := c.entriesMap[key]
-	if exists {
-		entry = item.Value.(*cacheEntry)
-		oldPath = c.buildEntryPath(entry)
-	} else {
-		entry = &cacheEntry{key: key}
-	}
-
-	entry.mtime = time.Now()
-	entry.ttl = ttl
-	entry.onDisk = false
-	entry.sequence = c.sequence
-
-	if exists {
-		c.entriesList.MoveToFront(item)
-	} else {
-		c.entriesMap[entry.key] = c.entriesList.PushFront(entry)
-	}
-
-	return entry, oldPath
-}
-
 func keyToShard(key uint64) (keyStr string, shard string) {
 	keyStr = strconv.FormatUint(key, 36)
 	if len(keyStr) > 2 {
@@ -357,22 +327,22 @@ func keyToShard(key uint64) (keyStr string, shard string) {
 	}
 }
 
-func toFilename(key uint64, mtime time.Time, expires time.Time, sequence uint64) (string, string) {
+func toFilename(key uint64, mtime int64, expires int64, sequence uint64) (string, string) {
 	var expiresStr string
-	if expires.IsZero() {
+	if expires == 0 {
 		expiresStr = "+"
 	} else {
-		expiresStr = strconv.FormatInt(expires.UnixMilli(), 36)
+		expiresStr = strconv.FormatInt(expires, 36)
 	}
 	keyStr, shard := keyToShard(key)
-	name := keyStr + "_" + strconv.FormatInt(mtime.UnixMilli(), 36) + "_" + expiresStr
+	name := keyStr + "_" + strconv.FormatInt(mtime, 36) + "_" + expiresStr
 	if sequence > 0 {
 		name += "_" + strconv.FormatUint(sequence, 36)
 	}
 	return shard, name
 }
 
-func fromFilename(filename string) (key uint64, mtime time.Time, expires time.Time, sequence uint64, err error) {
+func fromFilename(filename string) (key uint64, mtime int64, expires int64, sequence uint64, err error) {
 	parts := strings.Split(filename, "_")
 	if len(parts) != 3 && len(parts) != 4 {
 		return key, mtime, expires, sequence, fmt.Errorf("%s should contain 4 underscore symbols but has %d", filename, len(parts))
@@ -383,18 +353,16 @@ func fromFilename(filename string) (key uint64, mtime time.Time, expires time.Ti
 		return key, mtime, expires, sequence, fmt.Errorf("failed to restore key from %s: %w", parts[0], err)
 	}
 
-	mtimeEpochMillis, err := strconv.ParseInt(parts[1], 36, 64)
+	mtime, err = strconv.ParseInt(parts[1], 36, 64)
 	if err != nil {
 		return key, mtime, expires, sequence, fmt.Errorf("failed to restore mtime from %s: %w", parts[1], err)
 	}
-	mtime = time.UnixMilli(mtimeEpochMillis)
 
 	if parts[2] != "+" {
-		expiresEpochMillis, err := strconv.ParseInt(parts[2], 36, 64)
+		expires, err = strconv.ParseInt(parts[2], 36, 64)
 		if err != nil {
 			return key, mtime, expires, sequence, fmt.Errorf("failed to restore expires from %s: %w", parts[2], err)
 		}
-		expires = time.UnixMilli(expiresEpochMillis)
 	}
 
 	if len(parts) == 4 {
@@ -407,100 +375,96 @@ func fromFilename(filename string) (key uint64, mtime time.Time, expires time.Ti
 	return key, mtime, expires, sequence, nil
 }
 
-func (c *cache) writeEntry(entry *cacheEntry, oldPath string, newPath string, filler Filler) (removedBytes int64, addedBytes int64, err error) {
+func (c *cache) preparePut(key uint64, ttl time.Duration) (mtime int64, expires int64, sequence uint64, newPath string) {
+	mtime = time.Now().UnixMilli()
+	if ttl != 0 {
+		expires = mtime + ttl.Milliseconds()
+	}
+	sequence = c.sequence.Add(1)
+	newPath = c.buildEntryPath(key, mtime, expires, sequence)
+	return mtime, expires, sequence, newPath
+}
+
+func (c *cache) writeEntry(key uint64, newPath string, filler Filler) (addedBytes int64, err error) {
 	var f *os.File
 	defer func() {
 		if f != nil {
 			if err != nil {
-				// close file but do not overwrite other error
+				// close & cleanup file but do not overwrite original error
 				_ = f.Close()
+				_ = os.Remove(newPath)
 			} else {
 				err = f.Close()
 			}
 		}
 	}()
 
-	if oldPath != "" {
-		err = os.Remove(oldPath)
-		if err != nil && !errors.Is(err, fs.ErrNotExist) {
-			return removedBytes, addedBytes, err
-		}
-		if err == nil {
-			removedBytes = entry.size
-		}
-	}
-
-	_, shard := keyToShard(entry.key)
+	_, shard := keyToShard(key)
 	shardDir := filepath.Join(c.cacheDir, shard)
-	err = os.MkdirAll(shardDir, c.dirMode)
+	err = os.MkdirAll(shardDir, c.dirMode) // TODO: do once in builder or init
 	if err != nil && !errors.Is(err, fs.ErrExist) {
-		return removedBytes, addedBytes, err
+		return addedBytes, err
 	}
 
 	f, err = os.OpenFile(newPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, c.fileMode)
 	if err != nil {
-		return removedBytes, addedBytes, err
+		return addedBytes, err
 	}
-	entry.onDisk = true
 
-	addedBytes, err = filler.WriteCacheData(entry.key, f)
+	addedBytes, err = filler.WriteCacheData(key, f)
 	if err != nil {
-		return removedBytes, addedBytes, err
+		return addedBytes, err
 	}
-	entry.size = addedBytes
 
-	return removedBytes, addedBytes, nil
+	return addedBytes, nil
 }
 
-// finalizePut updates usedSize or removes the invalid entry when an error occurred during writing.
-// It must be called with a locked entry and will unlock that entry.
+// finalizePut removes the old file, inserts the new entry and updates the cache stats.
+// It must be called with a locked entry.
 // It also triggers eviction.
-func (c *cache) finalizePut(entry *cacheEntry, removedBytes int64, addedBytes int64, err error) {
-	// Note: make sure to release entry lock before requesting cache lock otherwise GetReaderOrPut deadlocks
-
-	if err != nil { // cleanup failed puts
-		_ = os.Remove(c.buildEntryPath(entry))
-		entry.onDisk = false
-		c.locker.Unlock(entry.key)
-
-		c.lock.Lock()
-		item, ok := c.entriesMap[entry.key]
-		if ok {
-			c.entriesList.Remove(item)
-		}
-		delete(c.entriesMap, entry.key)
-		c.lock.Unlock()
-
-	} else { // update usedSize
-		c.locker.Unlock(entry.key)
-
-		c.lock.Lock()
-		if removedBytes > 0 {
-			c.usedSize -= removedBytes
-		}
-		if addedBytes > 0 {
-			c.usedSize += addedBytes
-		}
-		c.lock.Unlock()
+func (c *cache) finalizePut(key uint64, mtime int64, expires int64, sequence uint64, addedBytes int64) (entry *cacheEntry, err error) {
+	c.lock.RLock()
+	item, exists := c.entriesMap[key]
+	if exists {
+		entry = item.Value.(*cacheEntry)
+	} else {
+		entry = &cacheEntry{key: key}
 	}
+	c.lock.RUnlock()
+
+	if exists {
+		oldPath := c.buildEntryPath(key, entry.mtime, entry.expires, entry.sequence)
+		err := os.Remove(oldPath)
+		if err != nil && !errors.Is(err, fs.ErrNotExist) {
+			// cleanup new just created entry
+			_ = os.Remove(c.buildEntryPath(key, mtime, expires, sequence))
+			return nil, err
+		}
+	}
+	entry.mtime = mtime
+	entry.expires = expires
+	entry.sequence = sequence
+
+	c.lock.Lock()
+
+	c.puts += 1
+
+	if exists {
+		c.usedSize -= entry.size
+		c.entriesList.MoveToFront(item)
+	} else {
+		c.entriesMap[entry.key] = c.entriesList.PushFront(entry)
+	}
+
+	entry.size = addedBytes
+	c.usedSize += addedBytes
+
+	c.lock.Unlock()
 
 	// do eviction in background after put
 	go c.evict()
-}
 
-func (c *cache) removeFile(entry *cacheEntry) error {
-	c.locker.Lock(entry.key)
-	defer c.locker.Unlock(entry.key)
-
-	if entry.onDisk {
-		err := os.Remove(c.buildEntryPath(entry))
-		if err != nil {
-			return err
-		}
-		entry.onDisk = false
-	}
-
-	return nil
+	return entry, nil
 }
 
 func readDirWithoutSort(name string) ([]os.DirEntry, error) {
@@ -542,18 +506,14 @@ func (c *cache) loadEntries() error {
 						return fmt.Errorf("failed to restore size from %s: %w", path, err)
 					}
 
-					var ttl time.Duration
-					if !expires.IsZero() {
-						ttl = expires.Sub(mtime)
-					}
-
-					ce := &cacheEntry{key: key, onDisk: true, sequence: sequence, size: info.Size(), mtime: mtime, ttl: ttl}
+					ce := &cacheEntry{key: key, sequence: sequence, size: info.Size(), mtime: mtime, expires: expires}
 
 					c.lock.Lock()
 					existing, exists := c.entriesMap[ce.key]
 					if exists {
 						c.lock.Unlock()
-						newPath := c.buildEntryPath(existing.Value.(*cacheEntry))
+						existingEntry := existing.Value.(*cacheEntry)
+						newPath := c.buildEntryPath(existingEntry.key, existingEntry.mtime, existingEntry.expires, existingEntry.sequence)
 						if path != newPath {
 							// Remove old file in case the key was written to by a normal put during loading.
 							err = os.Remove(path)
@@ -564,9 +524,6 @@ func (c *cache) loadEntries() error {
 					} else {
 						c.entriesMap[ce.key] = c.entriesList.PushFront(ce)
 						c.usedSize += ce.size
-						if sequence > c.sequence {
-							c.sequence = sequence
-						}
 						c.lock.Unlock()
 					}
 				}
@@ -585,7 +542,7 @@ func (c *cache) evict() {
 		return
 	}
 
-	c.lock.Lock()
+	c.lock.RLock()
 
 	if c.usedSize > c.targetSize {
 
@@ -612,6 +569,9 @@ func (c *cache) evict() {
 				break
 			}
 		}
+
+		c.lock.RUnlock()
+		c.lock.Lock()
 
 		var deleted []*cacheEntry
 
@@ -643,7 +603,7 @@ func (c *cache) evict() {
 		c.lock.Unlock()
 
 		for _, entry := range deleted {
-			err := c.removeFile(entry)
+			err := os.Remove(c.buildEntryPath(entry.key, entry.mtime, entry.expires, entry.sequence))
 			if err != nil {
 				c.lock.Lock()
 				c.evictionErrors = append(c.evictionErrors, EvictionError{
@@ -657,7 +617,7 @@ func (c *cache) evict() {
 			}
 		}
 	} else {
-		c.lock.Unlock()
+		c.lock.RUnlock()
 	}
 
 	c.evictionTime = time.Now()
