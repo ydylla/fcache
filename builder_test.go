@@ -2,6 +2,7 @@ package fcache
 
 import (
 	"io/fs"
+	"os"
 	"sync"
 	"testing"
 )
@@ -16,7 +17,20 @@ func TestBuilder_WithFileMode(t *testing.T) {
 		t.Fatalf("Expected '%o' but got '%o'\n", 0600, c.fileMode)
 	}
 	if c.dirMode != 0700 {
-		t.Fatalf("Expected '%o' but got '%o'\n", 0700, c.fileMode)
+		t.Fatalf("Expected '%o' but got '%o'\n", 0700, c.dirMode)
+	}
+	shardDirs, err := os.ReadDir(dir)
+	assertNoError(t, err)
+	if len(shardDirs) != 1296 {
+		t.Fatalf("Expected %d shard dirs but got %d\n", 1296, len(shardDirs))
+	}
+	for _, shardDir := range shardDirs {
+		if !shardDir.IsDir() {
+			t.Fatalf("Shard '%s' is not a dir\n", shardDir.Name())
+		}
+		if len(shardDir.Name()) != 2 {
+			t.Fatalf("Shard '%s' has not length 2\n", shardDir.Name())
+		}
 	}
 
 	_, err = Builder(dir, 50*MB).WithFileMode(0477).Build()
@@ -32,7 +46,12 @@ func TestBuilder_WithFileMode(t *testing.T) {
 		t.Fatalf("Expected '%o' but got '%o'\n", fileMode, c.fileMode)
 	}
 	if c.dirMode != 0766 {
-		t.Fatalf("Expected '%o' but got '%o'\n", fileMode, c.fileMode)
+		t.Fatalf("Expected '%o' but got '%o'\n", 0766, c.dirMode)
+	}
+	shardDirs, err = os.ReadDir(dir)
+	assertNoError(t, err)
+	if len(shardDirs) != 1296 {
+		t.Fatalf("Expected %d shard dirs but got %d\n", 1296, len(shardDirs))
 	}
 }
 

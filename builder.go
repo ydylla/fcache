@@ -108,6 +108,11 @@ func (b *builder) Build() (Cache, error) {
 		locker:           NewLocker(),
 	}
 
+	err = c.createShardDirs()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create shard dirs: %w", err)
+	}
+
 	if b.backgroundInit {
 		go func() {
 			err = c.loadEntries()

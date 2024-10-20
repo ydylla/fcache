@@ -282,6 +282,10 @@ func (c *cache) Clear(resetStats bool) error {
 	if err != nil {
 		return err
 	}
+	err = c.createShardDirs()
+	if err != nil {
+		return err
+	}
 
 	c.usedSize = 0
 
@@ -294,6 +298,19 @@ func (c *cache) Clear(resetStats bool) error {
 		c.evictions = 0
 	}
 
+	return nil
+}
+
+// createShardDirs creates all 36^2 possible shard dirs
+func (c *cache) createShardDirs() error {
+	for i := 0; i < 1296; i++ {
+		_, shard := keyToShard(uint64(i))
+		shardDir := filepath.Join(c.cacheDir, shard)
+		err := os.MkdirAll(shardDir, c.dirMode)
+		if err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -398,13 +415,6 @@ func (c *cache) writeEntry(key uint64, newPath string, filler Filler) (addedByte
 			}
 		}
 	}()
-
-	_, shard := keyToShard(key)
-	shardDir := filepath.Join(c.cacheDir, shard)
-	err = os.MkdirAll(shardDir, c.dirMode) // TODO: do once in builder or init
-	if err != nil && !errors.Is(err, fs.ErrExist) {
-		return addedBytes, err
-	}
 
 	f, err = os.OpenFile(newPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, c.fileMode)
 	if err != nil {

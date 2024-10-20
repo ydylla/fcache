@@ -836,6 +836,22 @@ func TestFileCache_Delete(t *testing.T) {
 	}, c.Stats())
 }
 
+func countDirsAndFiles(dir string) (dirs int, files int, err error) {
+	err = filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			dirs++
+		} else {
+			files++
+		}
+		return nil
+	})
+	// don't count root dir
+	return dirs - 1, files, err
+}
+
 func TestFileCache_Clear(t *testing.T) {
 	dir := t.TempDir()
 	ci, err := Builder(dir, 1*TB).WithEvictionInterval(1 * time.Hour).Build()
@@ -863,9 +879,13 @@ func TestFileCache_Clear(t *testing.T) {
 	err = c.Clear(false)
 	assertNoError(t, err)
 
-	_, err = os.Stat(dir)
-	if !os.IsNotExist(err) {
-		t.Fatal("Cache dir was not removed")
+	dirs, files, err := countDirsAndFiles(dir)
+	assertNoError(t, err)
+	if files != 0 {
+		t.Fatalf("%d files were not removed\n", files)
+	}
+	if dirs != 1296 {
+		t.Fatalf("Expected %d shard dirs but got %d\n", 1296, dirs)
 	}
 
 	assertStruct(t, Stats{
@@ -887,9 +907,13 @@ func TestFileCache_Clear(t *testing.T) {
 	err = c.Clear(true)
 	assertNoError(t, err)
 
-	_, err = os.Stat(dir)
-	if !os.IsNotExist(err) {
-		t.Fatal("Cache dir was not removed")
+	dirs, files, err = countDirsAndFiles(dir)
+	assertNoError(t, err)
+	if files != 0 {
+		t.Fatalf("%d files were not removed\n", files)
+	}
+	if dirs != 1296 {
+		t.Fatalf("Expected %d shard dirs but got %d\n", 1296, dirs)
 	}
 
 	assertStruct(t, Stats{
