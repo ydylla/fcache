@@ -7,6 +7,26 @@ import (
 	"time"
 )
 
+func expectNotDone(t *testing.T, chDone chan struct{}, msg string) {
+	t.Helper()
+	select {
+	case <-chDone:
+		t.Fatal(msg)
+	case <-time.After(1 * time.Millisecond):
+		// not done
+	}
+}
+
+func expectDone(t *testing.T, chDone chan struct{}, msg string) {
+	t.Helper()
+	select {
+	case <-chDone:
+		// done
+	case <-time.After(10 * time.Millisecond):
+		t.Fatal(msg)
+	}
+}
+
 func TestLockerLock(t *testing.T) {
 	l := NewLocker()
 	l.Lock(1)
@@ -35,29 +55,17 @@ func TestLockerLock(t *testing.T) {
 		}
 	}()
 
-	select {
-	case <-chWaiting:
-	case <-time.After(1 * time.Second):
-		t.Fatal("timed out waiting for lock users to be incremented")
-	}
+	expectDone(t, chWaiting, "timed out waiting for lock users to be incremented")
 
 	if l.Size() != 1 {
 		t.Fatalf("expected size to be 1, got: %d", l.Size())
 	}
 
-	select {
-	case <-chDone:
-		t.Fatal("lock should not have returned while it was still held")
-	default:
-	}
+	expectNotDone(t, chDone, "lock should not have returned while it was still held")
 
 	l.Unlock(1)
 
-	select {
-	case <-chDone:
-	case <-time.After(3 * time.Second):
-		t.Fatalf("lock should have completed")
-	}
+	expectDone(t, chDone, "lock should have completed")
 
 	if holder.users != 1 {
 		t.Fatalf("expected users to be 1, got: %d", holder.users)
@@ -83,15 +91,58 @@ func TestLockerUnlock(t *testing.T) {
 		close(chDone)
 	}()
 
-	select {
-	case <-chDone:
-	case <-time.After(1 * time.Second):
-		t.Fatalf("lock should not be blocked")
-	}
+	expectDone(t, chDone, "lock should not be blocked")
 
 	if l.Size() != 1 {
 		t.Fatalf("expected size to be 1, got: %d", l.Size())
 	}
+}
+
+func TestLockerUpgrade(t *testing.T) {
+	l := NewLocker()
+	chDone := make(chan struct{})
+
+	l.RLock(1)
+	l.RLock(1)
+	go func() {
+		l.Upgrade(1)
+		chDone <- struct{}{}
+	}()
+	expectNotDone(t, chDone, "RLock prevents Upgrade")
+
+	// double Upgrade dead-locks.
+	if l.Upgrade(1) {
+		t.Error("Upgrade dead-lock")
+	}
+
+	l.RUnlock(1)
+	expectDone(t, chDone, "RUnlock enables Upgrade")
+
+	go func() {
+		l.RLock(1)
+		chDone <- struct{}{}
+	}()
+	expectNotDone(t, chDone, "Upgraded mutex prevents RLock")
+
+	l.Unlock(1)
+	expectDone(t, chDone, "Unlock enables RLock")
+
+	// Upgrade is given priority to Lock.
+	go func() {
+		l.Lock(1)
+		chDone <- struct{}{}
+	}()
+	expectNotDone(t, chDone, "RLock prevents Lock")
+
+	if !l.Upgrade(1) {
+		t.Error("failed to Upgrade")
+	}
+
+	expectNotDone(t, chDone, "Upgrade is given priority to Lock")
+
+	l.Unlock(1)
+
+	expectDone(t, chDone, "Unlock enables Lock")
 }
 
 func TestLockerLockTwoKeys(t *testing.T) {
@@ -145,7 +196,7 @@ func TestLockerConcurrency(t *testing.T) {
 				defer l.RUnlock(1)
 			}
 			s := time.Now()
-			for time.Now().Sub(s) < 2*time.Millisecond {
+			for time.Now().Sub(s) < 1*time.Millisecond {
 				// busy waiting, with time.Sleep it takes way longer for some reason
 			}
 		}(r)

@@ -2,6 +2,7 @@ package fcache
 
 import (
 	"sync"
+	"sync/atomic"
 )
 
 // Locker provides a key based locking mechanism
@@ -12,9 +13,9 @@ type Locker struct {
 }
 
 type lockHolder struct {
-	lock sync.RWMutex
-	// users is the number of users currently interacting with the lock
-	users int32
+	lock      sync.RWMutex
+	users     uint32 // users is the number of users currently interacting with the lock
+	upgrading atomic.Int32
 }
 
 // NewLocker creates a new Locker ready to be used
@@ -25,7 +26,7 @@ func NewLocker() *Locker {
 	}
 }
 
-func (l *Locker) prepareToLock(key uint64) *sync.RWMutex {
+func (l *Locker) prepareToLock(key uint64) *lockHolder {
 	l.mu.Lock()
 
 	holder, exists := l.locks[key]
@@ -37,19 +38,46 @@ func (l *Locker) prepareToLock(key uint64) *sync.RWMutex {
 
 	l.mu.Unlock()
 
-	return &holder.lock
+	return holder
 }
 
 // Lock locks a mutex with the given key for writing. If no mutex for that key exists it is created.
 func (l *Locker) Lock(key uint64) {
-	lock := l.prepareToLock(key)
-	lock.Lock()
+	holder := l.prepareToLock(key)
+lock:
+	holder.lock.Lock()
+	// Upgrade gets priority, retry lock if upgrade is in progress.
+	if holder.upgrading.Load() > 0 {
+		holder.lock.Unlock()
+		goto lock
+	}
 }
 
 // RLock locks a mutex with the given key for reading. If no mutex for that key exists it is created.
 func (l *Locker) RLock(key uint64) {
-	lock := l.prepareToLock(key)
-	lock.RLock()
+	holder := l.prepareToLock(key)
+	holder.lock.RLock()
+}
+
+// Upgrade converts a read lock to a write lock for the given key.
+// If the upgrade would deadlock or is not possible it returns false.
+// Inspired by https://github.com/kawasin73/umutex
+func (l *Locker) Upgrade(key uint64) (success bool) {
+	l.mu.Lock()
+	holder, exists := l.locks[key]
+	if exists {
+		l.mu.Unlock()
+
+		success = holder.upgrading.Add(1) == 1
+		if success {
+			holder.lock.RUnlock()
+			holder.lock.Lock()
+		}
+		holder.upgrading.Add(-1)
+	} else {
+		l.mu.Unlock()
+	}
+	return success
 }
 
 func (l *Locker) prepareToUnlock(key uint64) *sync.RWMutex {
