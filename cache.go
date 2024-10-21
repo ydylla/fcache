@@ -58,11 +58,11 @@ type cache struct {
 	fileMode   fs.FileMode
 
 	usedSize  int64
-	has       int64
-	gets      int64
-	hits      int64
-	puts      int64
-	deletes   int64
+	has       atomic.Int64
+	gets      atomic.Int64
+	hits      atomic.Int64
+	puts      atomic.Int64
+	deletes   atomic.Int64
 	evictions int64
 
 	sequence    atomic.Uint64
@@ -81,30 +81,35 @@ type cache struct {
 var _ Cache = (*cache)(nil)
 
 func (c *cache) Stats() Stats {
-	c.lock.RLock()
-	defer c.lock.RUnlock()
-
-	return Stats{
-		Items:            c.entriesList.Len(),
-		Bytes:            c.usedSize,
-		Has:              c.has,
-		Gets:             c.gets,
-		Hits:             c.hits,
-		Puts:             c.puts,
-		Deletes:          c.deletes,
-		Evictions:        c.evictions,
-		EvictionTime:     c.evictionTime,
-		EvictionDuration: c.evictionDuration,
-		EvictionErrors:   c.evictionErrors,
-		Locks:            c.locker.Size(),
+	stats := Stats{
+		Has:     c.has.Load(),
+		Gets:    c.gets.Load(),
+		Hits:    c.hits.Load(),
+		Puts:    c.puts.Load(),
+		Deletes: c.deletes.Load(),
+		Locks:   c.locker.Size(),
 	}
+	c.lock.RLock()
+	stats.Items = c.entriesList.Len()
+	stats.Bytes = c.usedSize
+	c.lock.RUnlock()
+
+	c.evictionLock.RLock()
+	stats.Evictions = c.evictions
+	stats.EvictionTime = c.evictionTime
+	stats.EvictionDuration = c.evictionDuration
+	stats.EvictionErrors = c.evictionErrors
+	c.evictionLock.RUnlock()
+
+	return stats
 }
 
 func (c *cache) Has(key uint64) (*EntryInfo, error) {
-	c.lock.Lock()
+	c.has.Add(1)
+
+	c.lock.RLock()
 	item, ok := c.entriesMap[key]
-	c.has += 1
-	c.lock.Unlock()
+	c.lock.RUnlock()
 
 	if ok {
 		entry := item.Value.(*cacheEntry)
@@ -112,7 +117,7 @@ func (c *cache) Has(key uint64) (*EntryInfo, error) {
 		defer c.locker.RUnlock(entry.key)
 
 		if entry.isValid() {
-			return &EntryInfo{Size: entry.size, Mtime: entry.getMtime(), Expires: entry.getExpires()}, nil
+			return entry.Info(), nil
 		}
 	}
 
@@ -160,21 +165,19 @@ func (c *cache) Get(key uint64) ([]byte, *EntryInfo, error) {
 }
 
 func (c *cache) GetReader(key uint64) (io.ReadSeekCloser, *EntryInfo, error) {
-	c.locker.RLock(key)
-	defer c.locker.RUnlock(key)
-
 	entry := c.getEntry(key)
 	if entry == nil {
 		return nil, nil, ErrNotFound
 	}
 
+	c.locker.RLock(key)
+	defer c.locker.RUnlock(key)
+
 	if !entry.isValid() {
 		return nil, nil, ErrNotFound
 	}
 
-	c.lock.Lock()
-	c.hits += 1
-	c.lock.Unlock()
+	c.hits.Add(1)
 
 	f, err := os.Open(c.buildEntryPath(entry.key, entry.mtime, entry.expires, entry.sequence))
 	if err != nil {
@@ -204,7 +207,7 @@ retry:
 	c.locker.RLock(key)
 	entry := c.getEntry(key)
 	if entry != nil && entry.isValid() {
-		c.hits += 1
+		c.hits.Add(1)
 		// we are sure entry exits & is valid,
 		// so we can continue like a normal get
 		defer c.locker.RUnlock(key)
@@ -248,24 +251,25 @@ func (c *cache) Delete(key uint64) (*EntryInfo, error) {
 	c.locker.Lock(key)
 	defer c.locker.Unlock(key)
 
-	c.lock.Lock()
-	c.deletes += 1
+	c.deletes.Add(1)
+
+	c.lock.RLock()
 	item, ok := c.entriesMap[key]
-	var entry *cacheEntry
+	c.lock.RUnlock()
 	if ok {
-		entry = item.Value.(*cacheEntry)
+		entry := item.Value.(*cacheEntry)
 
-		c.entriesList.Remove(item)
-		delete(c.entriesMap, key)
-		c.usedSize -= entry.size
-	}
-	c.lock.Unlock()
-
-	if ok {
 		err := os.Remove(c.buildEntryPath(entry.key, entry.mtime, entry.expires, entry.sequence))
 		if err != nil {
 			return nil, err
 		}
+
+		c.lock.Lock()
+		c.entriesList.Remove(item)
+		delete(c.entriesMap, key)
+		c.usedSize -= entry.size
+		c.lock.Unlock()
+
 		return entry.Info(), nil
 	}
 
@@ -274,31 +278,42 @@ func (c *cache) Delete(key uint64) (*EntryInfo, error) {
 
 func (c *cache) Clear(resetStats bool) error {
 	c.lock.Lock()
-	defer c.lock.Unlock()
-
-	c.deletes += int64(len(c.entriesMap))
-
+	deletedEntries := c.entriesMap
+	c.deletes.Add(int64(len(c.entriesMap)))
 	c.entriesMap = make(map[uint64]*list.Element)
 	c.entriesList.Init()
-
-	err := os.RemoveAll(c.cacheDir)
-	if err != nil {
-		return err
-	}
-	err = c.createShardDirs()
-	if err != nil {
-		return err
-	}
-
 	c.usedSize = 0
+	c.lock.Unlock()
 
 	if resetStats {
-		c.has = 0
-		c.gets = 0
-		c.hits = 0
-		c.puts = 0
-		c.deletes = 0
+		c.has.Store(0)
+		c.gets.Store(0)
+		c.hits.Store(0)
+		c.puts.Store(0)
+		c.deletes.Store(0)
+		c.evictionLock.Lock()
 		c.evictions = 0
+		c.evictionLock.Unlock()
+	}
+
+	// delete actual files in "background" so cache can be used again before Clear returns
+
+	delErrors := 0
+	var delErr error
+	for _, element := range deletedEntries {
+		entry := element.Value.(*cacheEntry)
+		err := os.Remove(c.buildEntryPath(entry.key, entry.mtime, entry.expires, entry.sequence))
+		if err != nil {
+			delErrors++
+			delErr = err
+		}
+	}
+	if delErr != nil {
+		if delErrors > 1 {
+			return fmt.Errorf("encountered %d errors during clearing. The last one was: %w", delErrors, delErr)
+		} else {
+			return delErr
+		}
 	}
 
 	return nil
@@ -323,10 +338,10 @@ func (c *cache) buildEntryPath(key uint64, mtime int64, expires int64, sequence 
 }
 
 func (c *cache) getEntry(key uint64) *cacheEntry {
+	c.gets.Add(1)
+
 	c.lock.Lock()
 	defer c.lock.Unlock()
-
-	c.gets += 1
 
 	item, ok := c.entriesMap[key]
 	if ok {
@@ -396,6 +411,7 @@ func fromFilename(filename string) (key uint64, mtime int64, expires int64, sequ
 }
 
 func (c *cache) preparePut(key uint64, ttl time.Duration) (mtime int64, expires int64, sequence uint64, newPath string) {
+	c.puts.Add(1)
 	mtime = time.Now().UnixMilli()
 	if ttl != 0 {
 		expires = mtime + ttl.Milliseconds()
@@ -453,26 +469,24 @@ func (c *cache) finalizePut(key uint64, mtime int64, expires int64, sequence uin
 			_ = os.Remove(c.buildEntryPath(key, mtime, expires, sequence))
 			return nil, err
 		}
+
 	}
+
 	entry.mtime = mtime
 	entry.expires = expires
 	entry.sequence = sequence
 
 	c.lock.Lock()
-
-	c.puts += 1
-
 	if exists {
 		c.usedSize -= entry.size
 		c.entriesList.MoveToFront(item)
 	} else {
 		c.entriesMap[entry.key] = c.entriesList.PushFront(entry)
 	}
+	c.usedSize += addedBytes
+	c.lock.Unlock()
 
 	entry.size = addedBytes
-	c.usedSize += addedBytes
-
-	c.lock.Unlock()
 
 	// do eviction in background after put
 	go c.evict()
@@ -620,7 +634,6 @@ func (c *cache) evict() {
 		for _, entry := range deleted {
 			err := os.Remove(c.buildEntryPath(entry.key, entry.mtime, entry.expires, entry.sequence))
 			if err != nil {
-				c.lock.Lock()
 				c.evictionErrors = append(c.evictionErrors, EvictionError{
 					Time:  time.Now(),
 					Error: err,
@@ -628,7 +641,6 @@ func (c *cache) evict() {
 				if len(c.evictionErrors) > 1000 {
 					c.evictionErrors = c.evictionErrors[1:]
 				}
-				c.lock.Unlock()
 			}
 		}
 	} else {
