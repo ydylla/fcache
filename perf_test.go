@@ -1,6 +1,7 @@
 package fcache
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -53,6 +54,36 @@ func BenchmarkCache_Get_SameKey(b *testing.B) {
 	b.Run(fmt.Sprintf("%d_bytes", size), func(b *testing.B) {
 		for i := 0; i < b.N; i++ {
 			_, _, err := cache.Get(key)
+			if err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+}
+
+func BenchmarkCache_GetOrPut_FreshKey(b *testing.B) {
+	dir := b.TempDir()
+	cache, err := Builder(dir, 1*GiB).Build()
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	size := 7 * KiB
+	key := uint64(1)
+	data := make([]byte, size)
+	rand.Read(data)
+
+	_, err = cache.Put(key, data, 0)
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	b.Run(fmt.Sprintf("%d_bytes", size), func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			_, _, _, err := cache.GetOrPut(uint64(i), 0, FillerFunc(func(key uint64, sink io.Writer) (written int64, err error) {
+				written, err = io.Copy(sink, bytes.NewReader(data))
+				return
+			}))
 			if err != nil {
 				b.Fatal(err)
 			}

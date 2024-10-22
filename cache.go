@@ -132,19 +132,13 @@ func (c *cache) PutReader(key uint64, r io.Reader, ttl time.Duration) (*EntryInf
 	c.locker.Lock(key)
 	defer c.locker.Unlock(key)
 
-	mtime, expires, sequence, newPath := c.preparePut(key, ttl)
-
-	addedBytes, err := c.writeEntry(key, newPath, FillerFunc(func(key uint64, sink io.Writer) (written int64, err error) {
+	entry, _, err := c.putEntry(key, ttl, false, FillerFunc(func(key uint64, sink io.Writer) (written int64, err error) {
 		return io.Copy(sink, r)
 	}))
 	if err != nil {
 		return nil, err
 	}
 
-	entry, err := c.finalizePut(key, mtime, expires, sequence, addedBytes)
-	if err != nil {
-		return nil, err
-	}
 	return entry.Info(), nil
 }
 
@@ -228,19 +222,14 @@ retry:
 	}
 	defer c.locker.Unlock(key)
 
-	mtime, expires, sequence, newPath := c.preparePut(key, ttl)
-
-	addedBytes, err := c.writeEntry(key, newPath, filler)
-	if err != nil {
-		return nil, nil, false, err
-	}
-	entry, err = c.finalizePut(key, mtime, expires, sequence, addedBytes)
+	entry, r, err = c.putEntry(key, ttl, true, filler)
 	if err != nil {
 		return nil, nil, false, err
 	}
 
-	r, err = os.Open(newPath)
+	_, err = r.Seek(0, io.SeekStart)
 	if err != nil {
+		_ = r.Close()
 		return nil, nil, false, err
 	}
 
@@ -410,48 +399,43 @@ func fromFilename(filename string) (key uint64, mtime int64, expires int64, sequ
 	return key, mtime, expires, sequence, nil
 }
 
-func (c *cache) preparePut(key uint64, ttl time.Duration) (mtime int64, expires int64, sequence uint64, newPath string) {
+func (c *cache) putEntry(key uint64, ttl time.Duration, keepOpen bool, filler Filler) (entry *cacheEntry, file *os.File, err error) {
 	c.puts.Add(1)
-	mtime = time.Now().UnixMilli()
+
+	mtime := time.Now().UnixMilli()
+	var expires int64
 	if ttl != 0 {
 		expires = mtime + ttl.Milliseconds()
 	}
-	sequence = c.sequence.Add(1)
-	newPath = c.buildEntryPath(key, mtime, expires, sequence)
-	return mtime, expires, sequence, newPath
-}
+	sequence := c.sequence.Add(1)
 
-func (c *cache) writeEntry(key uint64, newPath string, filler Filler) (addedBytes int64, err error) {
-	var f *os.File
+	newPath := c.buildEntryPath(key, mtime, expires, sequence)
+
 	defer func() {
-		if f != nil {
+		if file != nil {
 			if err != nil {
 				// close & cleanup file but do not overwrite original error
-				_ = f.Close()
+				_ = file.Close()
 				_ = os.Remove(newPath)
 			} else {
-				err = f.Close()
+				if !keepOpen {
+					err = file.Close()
+				}
 			}
 		}
 	}()
 
-	f, err = os.OpenFile(newPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, c.fileMode)
+	file, err = os.OpenFile(newPath, os.O_RDWR|os.O_CREATE|os.O_TRUNC, c.fileMode)
 	if err != nil {
-		return addedBytes, err
+		return nil, file, err
 	}
 
-	addedBytes, err = filler.WriteCacheData(key, f)
+	var addedBytes int64
+	addedBytes, err = filler.WriteCacheData(key, file)
 	if err != nil {
-		return addedBytes, err
+		return nil, file, err
 	}
 
-	return addedBytes, nil
-}
-
-// finalizePut removes the old file, inserts the new entry and updates the cache stats.
-// It must be called with a locked entry.
-// It also triggers eviction.
-func (c *cache) finalizePut(key uint64, mtime int64, expires int64, sequence uint64, addedBytes int64) (entry *cacheEntry, err error) {
 	c.lock.RLock()
 	item, exists := c.entriesMap[key]
 	if exists {
@@ -463,35 +447,32 @@ func (c *cache) finalizePut(key uint64, mtime int64, expires int64, sequence uin
 
 	if exists {
 		oldPath := c.buildEntryPath(key, entry.mtime, entry.expires, entry.sequence)
-		err := os.Remove(oldPath)
-		if err != nil && !errors.Is(err, fs.ErrNotExist) {
-			// cleanup new just created entry
-			_ = os.Remove(c.buildEntryPath(key, mtime, expires, sequence))
-			return nil, err
+		oldDelErr := os.Remove(oldPath)
+		if oldDelErr != nil && !errors.Is(oldDelErr, fs.ErrNotExist) {
+			err = oldDelErr
+			return nil, file, err
 		}
-
 	}
-
-	entry.mtime = mtime
-	entry.expires = expires
-	entry.sequence = sequence
 
 	c.lock.Lock()
 	if exists {
 		c.usedSize -= entry.size
 		c.entriesList.MoveToFront(item)
 	} else {
-		c.entriesMap[entry.key] = c.entriesList.PushFront(entry)
+		c.entriesMap[key] = c.entriesList.PushFront(entry)
 	}
 	c.usedSize += addedBytes
 	c.lock.Unlock()
 
 	entry.size = addedBytes
+	entry.mtime = mtime
+	entry.expires = expires
+	entry.sequence = sequence
 
 	// do eviction in background after put
 	go c.evict()
 
-	return entry, nil
+	return entry, file, nil
 }
 
 func readDirWithoutSort(name string) ([]os.DirEntry, error) {
