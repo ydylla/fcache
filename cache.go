@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -54,8 +53,8 @@ func (e *cacheEntry) Info() *EntryInfo {
 type cache struct {
 	cacheDir   string
 	targetSize int64
-	dirMode    fs.FileMode
-	fileMode   fs.FileMode
+	dirMode    os.FileMode
+	fileMode   os.FileMode
 
 	usedSize  int64
 	has       atomic.Int64
@@ -178,7 +177,7 @@ func (c *cache) GetReader(key uint64) (io.ReadSeekCloser, *EntryInfo, error) {
 	f, err := os.Open(c.buildEntryPath(entry.key, entry.mtime, entry.expires, entry.sequence))
 	if err != nil {
 		// pretend the entry does not exist, its file was likely just removed by a clear or evict
-		if c.clearOrEvictDoingDeletes.Load() > 0 && errors.Is(err, fs.ErrNotExist) {
+		if c.clearOrEvictDoingDeletes.Load() > 0 && errors.Is(err, os.ErrNotExist) {
 			return nil, nil, ErrNotFound
 		}
 		return nil, nil, err
@@ -259,7 +258,7 @@ func (c *cache) Delete(key uint64) (*EntryInfo, error) {
 		entry := item.Value.(*cacheEntry)
 
 		err := os.Remove(c.buildEntryPath(entry.key, entry.mtime, entry.expires, entry.sequence))
-		if err != nil {
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
 			return nil, err
 		}
 
@@ -304,7 +303,7 @@ func (c *cache) Clear(resetStats bool) error {
 	for _, element := range deletedEntries {
 		entry := element.Value.(*cacheEntry)
 		err := os.Remove(c.buildEntryPath(entry.key, entry.mtime, entry.expires, entry.sequence))
-		if err != nil {
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
 			delErrors++
 			delErr = err
 		}
@@ -460,7 +459,7 @@ func (c *cache) putEntry(key uint64, ttl time.Duration, keepOpen bool, filler Fi
 	if exists {
 		oldPath := c.buildEntryPath(key, entry.mtime, entry.expires, entry.sequence)
 		oldDelErr := os.Remove(oldPath)
-		if oldDelErr != nil && !errors.Is(oldDelErr, fs.ErrNotExist) {
+		if oldDelErr != nil && !errors.Is(oldDelErr, os.ErrNotExist) {
 			err = oldDelErr
 			return nil, file, err
 		}
@@ -536,7 +535,10 @@ func (c *cache) loadEntries() error {
 						newPath := c.buildEntryPath(existingEntry.key, existingEntry.mtime, existingEntry.expires, existingEntry.sequence)
 						if path != newPath {
 							// Remove old file in case the key was written to by a normal put during loading.
-							err = os.Remove(path)
+							delErr := os.Remove(path)
+							if delErr != nil && !errors.Is(delErr, os.ErrNotExist) {
+								err = delErr
+							}
 						}
 						if err != nil {
 							return fmt.Errorf("failed to remove overwritten entry at %s: %w", path, err)
@@ -629,7 +631,7 @@ func (c *cache) evict() {
 
 		for _, entry := range deleted {
 			err := os.Remove(c.buildEntryPath(entry.key, entry.mtime, entry.expires, entry.sequence))
-			if err != nil {
+			if err != nil && !errors.Is(err, os.ErrNotExist) {
 				c.evictionErrors = append(c.evictionErrors, EvictionError{
 					Time:  time.Now(),
 					Error: err,

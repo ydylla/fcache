@@ -1354,9 +1354,17 @@ func TestFileCache_evict_ErrorOnFileRemove(t *testing.T) {
 	assertNoError(t, err)
 	time.Sleep(1 * time.Millisecond)
 
-	// remove cache dir to trigger error on evict
-	err = os.RemoveAll(dir)
+	// modify permissions to trigger error on remove
+	entry := c.getEntry(1)
+	entryPath := c.buildEntryPath(entry.key, entry.mtime, entry.expires, entry.sequence)
+	// prevent deletion on windows
+	f, err := os.Open(entryPath)
 	assertNoError(t, err)
+	defer f.Close()
+	// prevent deletion on linux
+	shardDir := filepath.Dir(entryPath)
+	assertNoError(t, os.Chmod(shardDir, 0o400))
+	defer os.Chmod(shardDir, 0o700)
 
 	c.evictionTime = time.Now().Add(-1 * time.Hour)
 	c.evict()

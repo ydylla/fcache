@@ -4,7 +4,6 @@ import (
 	"container/list"
 	"errors"
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"time"
@@ -22,7 +21,7 @@ type builder struct {
 	targetSize         Size
 	evictionConfigured bool
 	evictionInterval   time.Duration
-	fileMode           fs.FileMode
+	fileMode           os.FileMode
 	backgroundInit     bool
 	initCallback       InitCallback
 }
@@ -38,7 +37,7 @@ func (b *builder) WithEvictionInterval(evictionInterval time.Duration) *builder 
 // WithFileMode configures which file mode is used for the cache files.
 // By default 0600 is used.
 // Remember to also check your umask when you change this.
-func (b *builder) WithFileMode(perm fs.FileMode) *builder {
+func (b *builder) WithFileMode(perm os.FileMode) *builder {
 	b.fileMode = perm
 	return b
 }
@@ -76,7 +75,7 @@ func (b *builder) Build() (Cache, error) {
 	dirMode := b.fileMode | 0700
 
 	err := os.MkdirAll(b.cacheDir, dirMode)
-	if err != nil && !errors.Is(err, fs.ErrExist) {
+	if err != nil && !errors.Is(err, os.ErrExist) {
 		return nil, fmt.Errorf("failed to create cacheDir at %s: %w", b.cacheDir, err)
 	}
 	writeTestPath := filepath.Join(b.cacheDir, "test")
