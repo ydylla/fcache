@@ -76,6 +76,8 @@ type cache struct {
 	evictionTime     time.Time
 	evictionDuration time.Duration
 	evictionErrors   []EvictionError
+
+	clearOrEvictDoingDeletes atomic.Int32
 }
 
 var _ Cache = (*cache)(nil)
@@ -175,6 +177,10 @@ func (c *cache) GetReader(key uint64) (io.ReadSeekCloser, *EntryInfo, error) {
 
 	f, err := os.Open(c.buildEntryPath(entry.key, entry.mtime, entry.expires, entry.sequence))
 	if err != nil {
+		// pretend the entry does not exist, its file was likely just removed by a clear or evict
+		if c.clearOrEvictDoingDeletes.Load() > 0 && errors.Is(err, fs.ErrNotExist) {
+			return nil, nil, ErrNotFound
+		}
 		return nil, nil, err
 	}
 	return f, entry.Info(), nil
@@ -202,18 +208,22 @@ retry:
 	entry := c.getEntry(key)
 	if entry != nil && entry.isValid() {
 		c.hits.Add(1)
-		// we are sure entry exits & is valid,
-		// so we can continue like a normal get
-		defer c.locker.RUnlock(key)
 
 		r, err = os.Open(c.buildEntryPath(entry.key, entry.mtime, entry.expires, entry.sequence))
 		if err != nil {
+			// the file was likely just removed by a clear or evict, so we ignore the err
+			if c.clearOrEvictDoingDeletes.Load() > 0 && errors.Is(err, os.ErrNotExist) {
+				c.hits.Add(-1) // don't count this as hit
+				goto put
+			}
+			c.locker.RUnlock(key)
 			return nil, nil, false, err
 		}
-
-		return r, entry.Info(), true, nil
+		info = entry.Info()
+		c.locker.RUnlock(key)
+		return r, info, true, nil
 	}
-
+put:
 	// entry does not exist or is expired, so we need to do a put.
 	// Upgrade the read lock to a write lock, if this fails another goroutine is already doing a put.
 	if !c.locker.Upgrade(key) {
@@ -286,6 +296,8 @@ func (c *cache) Clear(resetStats bool) error {
 	}
 
 	// delete actual files in "background" so cache can be used again before Clear returns
+	c.clearOrEvictDoingDeletes.Add(1)
+	defer c.clearOrEvictDoingDeletes.Add(-1)
 
 	delErrors := 0
 	var delErr error
@@ -611,6 +623,9 @@ func (c *cache) evict() {
 
 		// we can release the cache lock now and delete the actual files in "background"
 		c.lock.Unlock()
+
+		c.clearOrEvictDoingDeletes.Add(1)
+		defer c.clearOrEvictDoingDeletes.Add(-1)
 
 		for _, entry := range deleted {
 			err := os.Remove(c.buildEntryPath(entry.key, entry.mtime, entry.expires, entry.sequence))

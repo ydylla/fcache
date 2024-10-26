@@ -1373,3 +1373,46 @@ func TestFileCache_evict_ErrorOnFileRemove(t *testing.T) {
 		t.Fatalf("Expected op \"remove\" but got %s", pathErr.Op)
 	}
 }
+
+func TestFileCache_Ignore_ErrNotExist(t *testing.T) {
+	dir := t.TempDir()
+	ci, err := Builder(dir, 50*TiB).WithEvictionInterval(1 * time.Hour).Build()
+	assertNoError(t, err)
+	c := ci.(*cache)
+
+	_, err = c.Put(1, DATA, 0)
+	assertNoError(t, err)
+
+	entry := c.getEntry(1)
+	err = os.Remove(c.buildEntryPath(1, entry.mtime, entry.expires, entry.sequence))
+	assertNoError(t, err)
+
+	_, err = c.Delete(1) // ignores that file is already missing
+	assertNoError(t, err)
+
+	_, err = c.Put(1, DATA, 0)
+	assertNoError(t, err)
+	entry = c.getEntry(1)
+	err = os.Remove(c.buildEntryPath(1, entry.mtime, entry.expires, entry.sequence))
+	assertNoError(t, err)
+	c.clearOrEvictDoingDeletes.Add(1) // simulate evict in progress
+
+	_, _, err = c.Get(1) // ignores not existing file error
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Expected ErrNotFound but got %v", err)
+	}
+
+	data, info, hit, err := c.GetOrPut(1, 0, FillerFunc(func(key uint64, sink io.Writer) (written int64, err error) {
+		return io.Copy(sink, bytes.NewReader(DATA))
+	}))
+	assertNoError(t, err)
+	if !bytes.Equal(data, DATA) {
+		t.Fatal("Unexpected data", data)
+	}
+	if info.Size != int64(len(DATA)) {
+		t.Fatalf("Expected size %d for entry but got %d", len(DATA), info.Size)
+	}
+	if hit {
+		t.Fatal("Should not be a cache hit")
+	}
+}
