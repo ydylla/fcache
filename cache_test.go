@@ -171,6 +171,28 @@ func TestFileCache_fromFilename(t *testing.T) {
 	if sequence3 != 1234 {
 		t.Fatal("Expected 1234 but got:", sequence3)
 	}
+
+	// some negative cases for test coverage
+	_, _, _, _, err := fromFilename("invalid")
+	if err == nil {
+		t.Fatal("Expected error but got nil")
+	}
+	_, _, _, _, err = fromFilename("&%_kzhcf8k8_+_ya")
+	if err == nil {
+		t.Fatal("Expected error but got nil")
+	}
+	_, _, _, _, err = fromFilename("3f_%_+_ya")
+	if err == nil {
+		t.Fatal("Expected error but got nil")
+	}
+	_, _, _, _, err = fromFilename("3f_kzhcf8k8_$_ya")
+	if err == nil {
+		t.Fatal("Expected error but got nil")
+	}
+	_, _, _, _, err = fromFilename("3f_kzhcf8k8_+_|")
+	if err == nil {
+		t.Fatal("Expected error but got nil")
+	}
 }
 
 func TestFileCache_Put(t *testing.T) {
@@ -1380,6 +1402,110 @@ func TestFileCache_evict_ErrorOnFileRemove(t *testing.T) {
 	if pathErr.Op != "remove" {
 		t.Fatalf("Expected op \"remove\" but got %s", pathErr.Op)
 	}
+}
+
+func validateEntryOrder(t *testing.T, c *cache, entries []*cacheEntry) {
+	t.Helper()
+	if len(entries) == 0 {
+		if c.first != nil {
+			t.Fatalf("c.first should have been nil but was %v", c.first)
+		}
+		if c.last != nil {
+			t.Fatalf("c.last should have been nil but was %v", c.last)
+		}
+		return
+	}
+	if c.first != entries[0] {
+		t.Fatalf("c.first should have been %v but was %v", entries[0], c.first)
+	}
+	if c.last != entries[len(entries)-1] {
+		t.Fatalf("c.last should have been %v but was %v", entries[len(entries)-1], c.last)
+	}
+	for i, entry := range entries {
+		if i == 0 {
+			if entry.prev != nil {
+				t.Fatalf("entry.prev should have been nil but was %v", entry.prev)
+			}
+		} else {
+			if entry.prev != entries[i-1] {
+				t.Fatalf("entry.prev should have been %v but was %v", entries[i-1], entry.prev)
+			}
+		}
+
+		if i == len(entries)-1 {
+			if entry.next != nil {
+				t.Fatalf("entry.next should have been nil but was %v", entry.next)
+			}
+		} else {
+			if entry.next != entries[i+1] {
+				t.Fatalf("entry.next should have been %v but was %v", entries[i+1], entry.next)
+			}
+		}
+	}
+}
+
+func TestFileCache_addEntry_removeEntry_moveToFront(t *testing.T) {
+	dir := t.TempDir()
+	ci, err := Builder(dir, 1*GB).WithEvictionInterval(1 * time.Hour).Build()
+	assertNoError(t, err)
+	c := ci.(*cache)
+
+	validateEntryOrder(t, c, []*cacheEntry{})
+
+	e1 := &cacheEntry{key: 1}
+	c.addEntry(e1)
+	validateEntryOrder(t, c, []*cacheEntry{e1})
+
+	c.moveToFront(e1)
+	validateEntryOrder(t, c, []*cacheEntry{e1})
+
+	c.removeEntry(e1)
+	validateEntryOrder(t, c, []*cacheEntry{})
+
+	e2 := &cacheEntry{key: 2}
+	c.addEntry(e1)
+	c.addEntry(e2)
+	validateEntryOrder(t, c, []*cacheEntry{e2, e1})
+
+	c.moveToFront(e2)
+	validateEntryOrder(t, c, []*cacheEntry{e2, e1})
+
+	c.moveToFront(e1)
+	validateEntryOrder(t, c, []*cacheEntry{e1, e2})
+
+	c.removeEntry(e1)
+	validateEntryOrder(t, c, []*cacheEntry{e2})
+
+	e3 := &cacheEntry{key: 3}
+	c.addEntry(e3)
+	c.addEntry(e1)
+	validateEntryOrder(t, c, []*cacheEntry{e1, e3, e2})
+
+	c.moveToFront(e3)
+	validateEntryOrder(t, c, []*cacheEntry{e3, e1, e2})
+
+	c.removeEntry(e1)
+	validateEntryOrder(t, c, []*cacheEntry{e3, e2})
+
+	e4 := &cacheEntry{key: 4}
+	c.addEntry(e4)
+	c.addEntry(e1)
+	validateEntryOrder(t, c, []*cacheEntry{e1, e4, e3, e2})
+
+	c.moveToFront(e2)
+	validateEntryOrder(t, c, []*cacheEntry{e2, e1, e4, e3})
+
+	c.removeEntry(e2)
+	validateEntryOrder(t, c, []*cacheEntry{e1, e4, e3})
+
+	c.removeEntry(e3)
+	validateEntryOrder(t, c, []*cacheEntry{e1, e4})
+
+	c.removeEntry(e4)
+	validateEntryOrder(t, c, []*cacheEntry{e1})
+
+	c.removeEntry(e1)
+	validateEntryOrder(t, c, []*cacheEntry{})
 }
 
 func TestFileCache_Ignore_ErrNotExist(t *testing.T) {

@@ -1,7 +1,6 @@
 package fcache
 
 import (
-	"container/list"
 	"errors"
 	"fmt"
 	"os"
@@ -99,8 +98,7 @@ func (b *builder) Build() (Cache, error) {
 	c := &cache{
 		cacheDir:         b.cacheDir,
 		targetSize:       int64(b.targetSize),
-		entriesList:      list.New(),
-		entriesMap:       map[uint64]*list.Element{},
+		entries:          make(map[uint64]*cacheEntry),
 		evictionInterval: b.evictionInterval,
 		dirMode:          dirMode,
 		fileMode:         b.fileMode,

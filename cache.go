@@ -2,7 +2,6 @@ package fcache
 
 import (
 	"bytes"
-	"container/list"
 	"errors"
 	"fmt"
 	"io"
@@ -21,6 +20,8 @@ type cacheEntry struct {
 	size     int64
 	mtime    int64
 	expires  int64
+	prev     *cacheEntry
+	next     *cacheEntry
 }
 
 func (e *cacheEntry) getExpires() time.Time {
@@ -64,11 +65,12 @@ type cache struct {
 	deletes   atomic.Int64
 	evictions int64
 
-	sequence    atomic.Uint64
-	lock        sync.RWMutex
-	entriesList *list.List
-	entriesMap  map[uint64]*list.Element
-	locker      *Locker
+	sequence atomic.Uint64
+	lock     sync.RWMutex
+	entries  map[uint64]*cacheEntry
+	first    *cacheEntry
+	last     *cacheEntry
+	locker   *Locker
 
 	evictionLock     sync.RWMutex
 	evictionInterval time.Duration
@@ -91,7 +93,7 @@ func (c *cache) Stats() Stats {
 		Locks:   c.locker.Size(),
 	}
 	c.lock.RLock()
-	stats.Items = c.entriesList.Len()
+	stats.Items = len(c.entries)
 	stats.Bytes = c.usedSize
 	c.lock.RUnlock()
 
@@ -109,13 +111,12 @@ func (c *cache) Has(key uint64) (*EntryInfo, error) {
 	c.has.Add(1)
 
 	c.lock.RLock()
-	item, ok := c.entriesMap[key]
+	entry, ok := c.entries[key]
 	c.lock.RUnlock()
 
 	if ok {
-		entry := item.Value.(*cacheEntry)
-		c.locker.RLock(entry.key)
-		defer c.locker.RUnlock(entry.key)
+		c.locker.RLock(key)
+		defer c.locker.RUnlock(key)
 
 		if entry.isValid() {
 			return entry.Info(), nil
@@ -252,20 +253,16 @@ func (c *cache) Delete(key uint64) (*EntryInfo, error) {
 	c.deletes.Add(1)
 
 	c.lock.RLock()
-	item, ok := c.entriesMap[key]
+	entry, ok := c.entries[key]
 	c.lock.RUnlock()
 	if ok {
-		entry := item.Value.(*cacheEntry)
-
 		err := os.Remove(c.buildEntryPath(entry.key, entry.mtime, entry.expires, entry.sequence))
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
 			return nil, err
 		}
 
 		c.lock.Lock()
-		c.entriesList.Remove(item)
-		delete(c.entriesMap, key)
-		c.usedSize -= entry.size
+		c.removeEntry(entry)
 		c.lock.Unlock()
 
 		return entry.Info(), nil
@@ -276,10 +273,9 @@ func (c *cache) Delete(key uint64) (*EntryInfo, error) {
 
 func (c *cache) Clear(resetStats bool) error {
 	c.lock.Lock()
-	deletedEntries := c.entriesMap
-	c.deletes.Add(int64(len(c.entriesMap)))
-	c.entriesMap = make(map[uint64]*list.Element)
-	c.entriesList.Init()
+	deletedEntries := c.entries
+	c.deletes.Add(int64(len(c.entries)))
+	c.entries = make(map[uint64]*cacheEntry)
 	c.usedSize = 0
 	c.lock.Unlock()
 
@@ -300,8 +296,7 @@ func (c *cache) Clear(resetStats bool) error {
 
 	delErrors := 0
 	var delErr error
-	for _, element := range deletedEntries {
-		entry := element.Value.(*cacheEntry)
+	for _, entry := range deletedEntries {
 		err := os.Remove(c.buildEntryPath(entry.key, entry.mtime, entry.expires, entry.sequence))
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
 			delErrors++
@@ -337,16 +332,68 @@ func (c *cache) buildEntryPath(key uint64, mtime int64, expires int64, sequence 
 	return filepath.Join(c.cacheDir, shard, name)
 }
 
+func (c *cache) moveToFront(entry *cacheEntry) {
+	if c.first != entry {
+		entry.prev.next = entry.next
+		if entry.next != nil {
+			entry.next.prev = entry.prev
+		} else {
+			c.last = entry.prev
+		}
+
+		entry.next = c.first
+		entry.prev = nil
+		if c.first != nil {
+			c.first.prev = entry
+		}
+		c.first = entry
+	}
+}
+
+func (c *cache) removeEntry(entry *cacheEntry) {
+	if entry.prev != nil {
+		entry.prev.next = entry.next
+	}
+	if entry.next != nil {
+		entry.next.prev = entry.prev
+	}
+	if c.first == entry {
+		c.first = entry.next
+	}
+	if c.last == entry {
+		c.last = entry.prev
+	}
+
+	entry.next = nil // avoid memory leaks
+	entry.prev = nil // avoid memory leaks
+
+	delete(c.entries, entry.key)
+	c.usedSize -= entry.size
+}
+
+func (c *cache) addEntry(entry *cacheEntry) {
+	entry.next = c.first
+	if c.first != nil {
+		c.first.prev = entry
+	}
+	c.first = entry
+	if c.last == nil {
+		c.last = entry
+	}
+
+	c.entries[entry.key] = entry
+	c.usedSize += entry.size
+}
+
 func (c *cache) getEntry(key uint64) *cacheEntry {
 	c.gets.Add(1)
 
 	c.lock.Lock()
 	defer c.lock.Unlock()
 
-	item, ok := c.entriesMap[key]
+	entry, ok := c.entries[key]
 	if ok {
-		entry := item.Value.(*cacheEntry)
-		c.entriesList.MoveToFront(item)
+		c.moveToFront(entry)
 		return entry
 	}
 
@@ -448,9 +495,9 @@ func (c *cache) putEntry(key uint64, ttl time.Duration, keepOpen bool, filler Fi
 	}
 
 	c.lock.RLock()
-	item, exists := c.entriesMap[key]
+	item, exists := c.entries[key]
 	if exists {
-		entry = item.Value.(*cacheEntry)
+		entry = item
 	} else {
 		entry = &cacheEntry{key: key}
 	}
@@ -468,9 +515,9 @@ func (c *cache) putEntry(key uint64, ttl time.Duration, keepOpen bool, filler Fi
 	c.lock.Lock()
 	if exists {
 		c.usedSize -= entry.size
-		c.entriesList.MoveToFront(item)
+		c.moveToFront(entry)
 	} else {
-		c.entriesMap[key] = c.entriesList.PushFront(entry)
+		c.addEntry(entry)
 	}
 	c.usedSize += addedBytes
 	c.lock.Unlock()
@@ -528,10 +575,9 @@ func (c *cache) loadEntries() error {
 					ce := &cacheEntry{key: key, sequence: sequence, size: info.Size(), mtime: mtime, expires: expires}
 
 					c.lock.Lock()
-					existing, exists := c.entriesMap[ce.key]
+					existingEntry, exists := c.entries[ce.key]
 					if exists {
 						c.lock.Unlock()
-						existingEntry := existing.Value.(*cacheEntry)
 						newPath := c.buildEntryPath(existingEntry.key, existingEntry.mtime, existingEntry.expires, existingEntry.sequence)
 						if path != newPath {
 							// Remove old file in case the key was written to by a normal put during loading.
@@ -544,8 +590,7 @@ func (c *cache) loadEntries() error {
 							return fmt.Errorf("failed to remove overwritten entry at %s: %w", path, err)
 						}
 					} else {
-						c.entriesMap[ce.key] = c.entriesList.PushFront(ce)
-						c.usedSize += ce.size
+						c.addEntry(ce)
 						c.lock.Unlock()
 					}
 				}
@@ -570,21 +615,19 @@ func (c *cache) evict() {
 
 	if c.usedSize > c.targetSize {
 
-		var expired []*list.Element
+		var expired []*cacheEntry
 		expiredSize := int64(0)
 
-		var candidates []*list.Element
+		var candidates []*cacheEntry
 		candidatesSize := int64(0)
 
-		for item := c.entriesList.Back(); item != nil; item = item.Prev() {
-			entry := item.Value.(*cacheEntry)
-
+		for entry := c.last; entry != nil; entry = entry.prev {
 			if entry.isExpired() {
-				expired = append(expired, item)
+				expired = append(expired, entry)
 				expiredSize += entry.size
 			} else {
 				if c.usedSize-(expiredSize+candidatesSize) > c.targetSize {
-					candidates = append(candidates, item)
+					candidates = append(candidates, entry)
 					candidatesSize += entry.size
 				}
 			}
@@ -600,24 +643,19 @@ func (c *cache) evict() {
 		var deleted []*cacheEntry
 
 		// remove all expired
-		for _, item := range expired {
-			entry := c.entriesList.Remove(item).(*cacheEntry)
-			delete(c.entriesMap, entry.key)
-			c.usedSize -= entry.size
+		for _, entry := range expired {
+			c.removeEntry(entry)
 			c.evictions += 1
 
 			deleted = append(deleted, entry)
 		}
 
 		// if target size is still not reached remove lru candidates until it is
-		for _, item := range candidates {
+		for _, entry := range candidates {
 			if c.usedSize < c.targetSize {
 				break
 			}
-
-			entry := c.entriesList.Remove(item).(*cacheEntry)
-			delete(c.entriesMap, entry.key)
-			c.usedSize -= entry.size
+			c.removeEntry(entry)
 			c.evictions += 1
 
 			deleted = append(deleted, entry)
