@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -545,60 +546,92 @@ func readDirWithoutSort(name string) ([]os.DirEntry, error) {
 	return dirs, err
 }
 
-func (c *cache) loadEntries() error {
+func (c *cache) loadEntries() []error {
 	shardDirs, err := readDirWithoutSort(c.cacheDir)
 	if err != nil {
-		return err
+		return []error{err}
 	}
 
-	for _, shardDir := range shardDirs {
-		if shardDir.IsDir() {
-			shardDirPath := filepath.Join(c.cacheDir, shardDir.Name())
-			entries, err := readDirWithoutSort(shardDirPath)
-			if err != nil {
-				return err
-			}
+	workers := runtime.NumCPU()
+	wg := sync.WaitGroup{}
+	queue := make(chan string, workers)
+	errsChan := make(chan error, workers)
 
-			for _, entry := range entries {
-				if !entry.IsDir() {
-					path := filepath.Join(shardDirPath, entry.Name())
-					key, mtime, expires, sequence, err := fromFilename(entry.Name())
-					if err != nil {
-						return fmt.Errorf("failed to restore meta from %s: %w", path, err)
-					}
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for shardDirPath := range queue {
+				entries, err := readDirWithoutSort(shardDirPath)
+				if err != nil {
+					errsChan <- err
+					continue
+				}
 
-					info, err := entry.Info()
-					if err != nil {
-						return fmt.Errorf("failed to restore size from %s: %w", path, err)
-					}
+				for _, entry := range entries {
+					if !entry.IsDir() {
+						path := filepath.Join(shardDirPath, entry.Name())
 
-					ce := &cacheEntry{key: key, sequence: sequence, size: info.Size(), mtime: mtime, expires: expires}
-
-					c.lock.Lock()
-					existingEntry, exists := c.entries[ce.key]
-					if exists {
-						c.lock.Unlock()
-						newPath := c.buildEntryPath(existingEntry.key, existingEntry.mtime, existingEntry.expires, existingEntry.sequence)
-						if path != newPath {
-							// Remove old file in case the key was written to by a normal put during loading.
-							delErr := os.Remove(path)
-							if delErr != nil && !errors.Is(delErr, os.ErrNotExist) {
-								err = delErr
-							}
-						}
+						key, mtime, expires, sequence, err := fromFilename(entry.Name())
 						if err != nil {
-							return fmt.Errorf("failed to remove overwritten entry at %s: %w", path, err)
+							errsChan <- fmt.Errorf("failed to restore meta from %s: %w", path, err)
+							continue
 						}
-					} else {
-						c.addEntry(ce)
-						c.lock.Unlock()
+
+						info, err := entry.Info()
+						if err != nil {
+							errsChan <- fmt.Errorf("failed to restore size from %s: %w", path, err)
+							continue
+						}
+
+						ce := &cacheEntry{key: key, sequence: sequence, size: info.Size(), mtime: mtime, expires: expires}
+
+						c.lock.Lock()
+						existingEntry, exists := c.entries[ce.key]
+						if exists {
+							c.lock.Unlock()
+							newPath := c.buildEntryPath(existingEntry.key, existingEntry.mtime, existingEntry.expires, existingEntry.sequence)
+							if path != newPath {
+								// Remove old file in case the key was written to by a normal put during loading.
+								delErr := os.Remove(path)
+								if delErr != nil && !errors.Is(delErr, os.ErrNotExist) {
+									err = delErr
+								}
+							}
+							if err != nil {
+								errsChan <- fmt.Errorf("failed to remove overwritten entry at %s: %w", path, err)
+							}
+						} else {
+							c.addEntry(ce)
+							c.lock.Unlock()
+						}
 					}
 				}
 			}
-		}
+		}()
 	}
 
-	return nil
+	go func() {
+		for _, shardDir := range shardDirs {
+			if shardDir.IsDir() {
+				shardDirPath := filepath.Join(c.cacheDir, shardDir.Name())
+				queue <- shardDirPath
+			}
+		}
+		close(queue)
+	}()
+
+	go func() {
+		wg.Wait()
+		close(errsChan)
+	}()
+
+	var errs []error
+	for err := range errsChan {
+		errs = append(errs, err)
+	}
+
+	return errs
 }
 
 func (c *cache) evict() {

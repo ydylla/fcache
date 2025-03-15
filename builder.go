@@ -112,18 +112,18 @@ func (b *builder) Build() (Cache, error) {
 
 	if b.backgroundInit {
 		go func() {
-			err = c.loadEntries()
+			errs := c.loadEntries()
 			if b.initCallback != nil {
-				if err != nil {
-					err = fmt.Errorf("failed to restore cache: %w", err)
+				if len(errs) > 0 {
+					err = fmt.Errorf("failed to restore cache with %d errors: %w", len(errs), errs[0])
 				}
 				b.initCallback(c, err)
 			}
 		}()
 	} else {
-		err = c.loadEntries()
-		if err != nil {
-			return nil, fmt.Errorf("failed to restore cache: %w", err)
+		errs := c.loadEntries()
+		if len(errs) > 0 {
+			return nil, fmt.Errorf("failed to restore cache with %d errors: %w", len(errs), errs[0])
 		}
 	}
 
