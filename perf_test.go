@@ -298,7 +298,7 @@ func writeMemoryUsage(w io.Writer, header bool) {
 
 	toMiB := func(b uint64) float32 { return float32(b) / 1024.0 / 1024.0 }
 
-	line := fmt.Sprintf("%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%d\n",
+	line := fmt.Sprintf("%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%d\n",
 		toMiB(m.TotalAlloc),
 		toMiB(m.Sys),
 		toMiB(m.HeapAlloc),
@@ -316,7 +316,7 @@ func writeMemoryUsage(w io.Writer, header bool) {
 
 func BenchmarkCache_MemoryUsage(b *testing.B) {
 	items := int64(100000)
-	size := 5 * KiB
+	size := 1 * KiB
 	targetSize := size * Size(items)
 
 	err := os.Mkdir("benchmarks", 0770)
