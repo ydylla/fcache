@@ -1,7 +1,7 @@
 package fcache
 
 import (
-	"math/rand"
+	"math/rand/v2"
 	"sync"
 	"testing"
 	"time"
@@ -181,7 +181,7 @@ func TestLockerConcurrency(t *testing.T) {
 	var wg sync.WaitGroup
 	for i := 0; i <= 1000; i++ {
 		wg.Add(1)
-		r := rand.Intn(2)
+		r := rand.IntN(2)
 		if r == 0 {
 			expectedWrites += 1
 		}
@@ -247,7 +247,7 @@ func BenchmarkLockerMoreKeys(b *testing.B) {
 	b.SetParallelism(128)
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			k := uint64(rand.Intn(64))
+			k := rand.Uint64N(64)
 			l.Lock(k)
 			time.Sleep(5 * time.Millisecond)
 			l.Unlock(k)
