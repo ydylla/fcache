@@ -1021,6 +1021,8 @@ func TestFileCache_Eviction(t *testing.T) {
 	c.evictionTime = time.Now().Add(-2 * time.Hour)
 	// fake duration so we can check assigment, sometimes it's 0
 	c.evictionDuration = -1
+	c.evictionReadLockDuration = -1
+	c.evictionWriteLockDuration = -1
 
 	beforeEviction := time.Now().Add(-1 * time.Millisecond)
 	c.evict()
@@ -1035,6 +1037,18 @@ func TestFileCache_Eviction(t *testing.T) {
 	}
 	if stats.EvictionDuration < 0 || stats.EvictionDuration > 1*time.Second {
 		t.Fatalf("Unexpected stats.EvictionDuration value: %v", stats.EvictionDuration)
+	}
+	if stats.EvictionReadLockDuration < 0 || stats.EvictionReadLockDuration > 1*time.Second {
+		t.Fatalf("Unexpected stats.EvictionReadLockDuration value: %v", c.evictionReadLockDuration)
+	}
+	if stats.EvictionReadLockDuration > stats.EvictionDuration {
+		t.Fatalf("stats.EvictionReadLockDuration > stats.EvictionDuration: %v > %v", stats.EvictionReadLockDuration, stats.EvictionDuration)
+	}
+	if stats.EvictionWriteLockDuration < 0 || stats.EvictionWriteLockDuration > 1*time.Second {
+		t.Fatalf("Unexpected stats.EvictionWriteLockDuration value: %v", c.evictionWriteLockDuration)
+	}
+	if stats.EvictionWriteLockDuration > stats.EvictionDuration {
+		t.Fatalf("stats.EvictionWriteLockDuration > stats.EvictionDuration: %v > %v", stats.EvictionWriteLockDuration, stats.EvictionDuration)
 	}
 
 	assertStats(t, Stats{

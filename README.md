@@ -30,7 +30,7 @@ The main functions are documented at the [Cache](https://pkg.go.dev/github.com/y
 Each cache entry is saved in its own file. On a successful get query the cache responds with a `io.ReadSeekCloser` backed by an `io.File`.
 The caller is responsible for closing the file handle after he is done reading.
 On each insert the old file is removed and a new one is created.
-Eviction happens in background after each insert and only if the amount of time specified by the eviction interval has passed.
+Eviction happens in background after insert and only if the amount of time specified by the eviction interval has passed.
 
 
 ## Limitations

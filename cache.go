@@ -73,11 +73,13 @@ type cache struct {
 	last     *cacheEntry
 	locker   *Locker
 
-	evictionLock     sync.RWMutex
-	evictionInterval time.Duration
-	evictionTime     time.Time
-	evictionDuration time.Duration
-	evictionErrors   []EvictionError
+	evictionLock              sync.RWMutex
+	evictionInterval          time.Duration
+	evictionTime              time.Time
+	evictionDuration          time.Duration
+	evictionReadLockDuration  time.Duration
+	evictionWriteLockDuration time.Duration
+	evictionErrors            []EvictionError
 
 	clearOrEvictDoingDeletes atomic.Int32
 }
@@ -102,6 +104,8 @@ func (c *cache) Stats() Stats {
 	stats.Evictions = c.evictions
 	stats.EvictionTime = c.evictionTime
 	stats.EvictionDuration = c.evictionDuration
+	stats.EvictionReadLockDuration = c.evictionReadLockDuration
+	stats.EvictionWriteLockDuration = c.evictionWriteLockDuration
 	stats.EvictionErrors = c.evictionErrors
 	c.evictionLock.RUnlock()
 
@@ -671,6 +675,8 @@ func (c *cache) evict() {
 		}
 
 		c.lock.RUnlock()
+		c.evictionReadLockDuration = time.Since(start)
+		writeStart := time.Now()
 		c.lock.Lock()
 
 		var deleted []*cacheEntry
@@ -696,6 +702,7 @@ func (c *cache) evict() {
 
 		// we can release the cache lock now and delete the actual files in "background"
 		c.lock.Unlock()
+		c.evictionWriteLockDuration = time.Since(writeStart)
 
 		c.clearOrEvictDoingDeletes.Add(1)
 		defer c.clearOrEvictDoingDeletes.Add(-1)
@@ -714,6 +721,8 @@ func (c *cache) evict() {
 		}
 	} else {
 		c.lock.RUnlock()
+		c.evictionReadLockDuration = time.Since(start)
+		c.evictionWriteLockDuration = 0
 	}
 
 	c.evictionTime = time.Now()
