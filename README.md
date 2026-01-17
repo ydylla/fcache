@@ -1,11 +1,11 @@
 # fcache
-![coverage](https://img.shields.io/badge/coverage-90%25-green) [![go-report-card](https://goreportcard.com/badge/github.com/ydylla/fcache)](https://goreportcard.com/report/github.com/ydylla/fcache) [![reference](https://pkg.go.dev/badge/github.com/ydylla/fcache.svg)](https://pkg.go.dev/github.com/ydylla/fcache)
+![coverage](https://img.shields.io/badge/coverage-91%25-green) [![go-report-card](https://goreportcard.com/badge/github.com/ydylla/fcache)](https://goreportcard.com/report/github.com/ydylla/fcache) [![reference](https://pkg.go.dev/badge/github.com/ydylla/fcache.svg)](https://pkg.go.dev/github.com/ydylla/fcache)
 
 fcache is a file based persistent blob cache. It can be used to bring remote files closer to applications.
 
 
 ## Features
-* Least recently used (LRU) eviction strategy
+* Least recently used (LRU) -ish eviction strategy
 * Optional time to live (TTL) per entry
 * Configurable size limit
 * Request coalescing, to atomically query and insert entries and avoid [cache stampedes](https://en.wikipedia.org/wiki/Cache_stampede)

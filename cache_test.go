@@ -986,10 +986,10 @@ func TestFileCache_Eviction(t *testing.T) {
 	_, err = c.Put(2, DATA, 0)
 	assertNoError(t, err)
 
-	e3, err := c.Put(3, DATA, 0)
+	_, err = c.Put(3, DATA, 0)
 	assertNoError(t, err)
 
-	_, err = c.Put(4, DATA, 0)
+	e4, err := c.Put(4, DATA, 0)
 	assertNoError(t, err)
 
 	// protect 2 from eviction by using it
@@ -1078,16 +1078,16 @@ func TestFileCache_Eviction(t *testing.T) {
 		t.Fatal("entry 2 should not have been evicted")
 	}
 	_, err = c.Has(3)
-	if err != ErrNotFound {
-		t.Fatal("entry 3 should have been evicted")
-	}
-	_, err = findFileForKey(t, dir, 3, e3.Mtime.UnixMilli(), 0)
-	if err == nil {
-		t.Fatal("entry 3 file was not removed")
+	if err != nil {
+		t.Fatal("entry 3 should not have been evicted")
 	}
 	_, err = c.Has(4)
-	if err != nil {
-		t.Fatal("entry 4 should not have been evicted")
+	if err != ErrNotFound {
+		t.Fatal("entry 4 should have been evicted")
+	}
+	_, err = findFileForKey(t, dir, 4, e4.Mtime.UnixMilli(), 0)
+	if err == nil {
+		t.Fatal("entry 4 file was not removed")
 	}
 
 	e5, err := c.Put(5, DATA, 1*time.Millisecond)
@@ -1144,13 +1144,13 @@ func TestFileCache_EvictionOnPut(t *testing.T) {
 
 	beforeEviction := time.Now().Add(-1 * time.Millisecond)
 
-	e1, err := c.Put(1, DATA, 0)
+	_, err = c.Put(1, DATA, 0)
 	assertNoError(t, err)
 
 	e2, err := c.Put(2, DATA, 0)
 	assertNoError(t, err)
 
-	_, err = c.Put(3, DATA, 0)
+	e3, err := c.Put(3, DATA, 0)
 	assertNoError(t, err)
 
 	// give async evict some time to finish
@@ -1199,14 +1199,9 @@ func TestFileCache_EvictionOnPut(t *testing.T) {
 	}
 
 	_, err = c.Has(1)
-	if err != ErrNotFound {
-		t.Fatal("entry 1 should have been evicted")
+	if err != nil {
+		t.Fatal("entry 1 should not have been evicted")
 	}
-	_, err = findFileForKey(t, dir, 1, e1.Mtime.UnixMilli(), 0)
-	if err == nil {
-		t.Fatal("entry 1 file was not removed")
-	}
-
 	_, err = c.Has(2)
 	if err != ErrNotFound {
 		t.Fatal("entry 2 should have been evicted")
@@ -1215,11 +1210,15 @@ func TestFileCache_EvictionOnPut(t *testing.T) {
 	if err == nil {
 		t.Fatal("entry 2 file was not removed")
 	}
-
 	_, err = c.Has(3)
-	if err != nil {
-		t.Fatal("entry 3 should not have been evicted")
+	if err != ErrNotFound {
+		t.Fatal("entry 3 should have been evicted")
 	}
+	_, err = findFileForKey(t, dir, 3, e3.Mtime.UnixMilli(), 0)
+	if err == nil {
+		t.Fatal("entry 3 file was not removed")
+	}
+
 	_, err = c.Has(4)
 	if err != nil {
 		t.Fatal("entry 4 should not have been evicted")
@@ -1391,8 +1390,8 @@ func TestFileCache_evict_ErrorOnFileRemove(t *testing.T) {
 	time.Sleep(1 * time.Millisecond)
 
 	// modify permissions to trigger error on remove
-	entry := c.getEntry(1)
-	entryPath := c.buildEntryPath(entry.key, entry.mtime, entry.expires, entry.sequence)
+	sequence, _, mtime, expires, _ := c.lookup(1)
+	entryPath := c.buildEntryPath(1, mtime, expires, sequence)
 	// prevent deletion on windows
 	f, err := os.Open(entryPath)
 	assertNoError(t, err)
@@ -1418,108 +1417,93 @@ func TestFileCache_evict_ErrorOnFileRemove(t *testing.T) {
 	}
 }
 
-func validateEntryOrder(t *testing.T, c *cache, entries []*cacheEntry) {
+func validateOrder(t *testing.T, c *cache, order []int64) {
 	t.Helper()
-	if len(entries) == 0 {
-		if c.first != nil {
-			t.Fatalf("c.first should have been nil but was %v", c.first)
+	if len(order) == 0 {
+		if len(c.keyToIdx) != 0 {
+			t.Fatalf("len(c.keyToIdx) should have been 0 but was %v", len(c.keyToIdx))
 		}
-		if c.last != nil {
-			t.Fatalf("c.last should have been nil but was %v", c.last)
+		if len(c.keys) != 0 {
+			t.Fatalf("len(c.keys) should have been 0 but was %v", len(c.keys))
+		}
+		if len(c.sequences) != 0 {
+			t.Fatalf("len(c.sequences) should have been 0 but was %v", len(c.sequences))
+		}
+		if len(c.sizes) != 0 {
+			t.Fatalf("len(c.sizes) should have been 0 but was %v", len(c.sizes))
+		}
+		if len(c.mtimes) != 0 {
+			t.Fatalf("len(c.mtimes) should have been 0 but was %v", len(c.mtimes))
+		}
+		if len(c.expires) != 0 {
+			t.Fatalf("len(c.expires) should have been 0 but was %v", len(c.expires))
 		}
 		return
 	}
-	if c.first != entries[0] {
-		t.Fatalf("c.first should have been %v but was %v", entries[0], c.first)
-	}
-	if c.last != entries[len(entries)-1] {
-		t.Fatalf("c.last should have been %v but was %v", entries[len(entries)-1], c.last)
-	}
-	for i, entry := range entries {
-		if i == 0 {
-			if entry.prev != nil {
-				t.Fatalf("entry.prev should have been nil but was %v", entry.prev)
-			}
-		} else {
-			if entry.prev != entries[i-1] {
-				t.Fatalf("entry.prev should have been %v but was %v", entries[i-1], entry.prev)
-			}
+	for i, v := range order {
+		if c.keyToIdx[uint64(v)] != i {
+			t.Fatalf("Expected keyToIdx[%d] == %d but got %d", v, i, c.keyToIdx[uint64(i)])
 		}
-
-		if i == len(entries)-1 {
-			if entry.next != nil {
-				t.Fatalf("entry.next should have been nil but was %v", entry.next)
-			}
-		} else {
-			if entry.next != entries[i+1] {
-				t.Fatalf("entry.next should have been %v but was %v", entries[i+1], entry.next)
-			}
+		if c.keys[i] != uint64(v) {
+			t.Fatalf("Expected keys[%d] == %d but got %d", i, v, c.keys[i])
+		}
+		if c.sequences[i] != uint64(v) {
+			t.Fatalf("Expected sequences[%d] == %d but got %d", i, v, c.sequences[i])
+		}
+		if c.sizes[i] != v {
+			t.Fatalf("Expected sizes[%d] == %d but got %d", i, v, c.sizes[i])
+		}
+		if c.mtimes[i] != v {
+			t.Fatalf("Expected mtimes[%d] == %d but got %d", i, v, c.mtimes[i])
+		}
+		if c.expires[i] != v {
+			t.Fatalf("Expected expires[%d] == %d but got %d", i, v, c.expires[i])
 		}
 	}
 }
 
-func TestFileCache_addEntry_removeEntry_moveToFront(t *testing.T) {
+func TestFileCache_append_remove_moveToFront(t *testing.T) {
 	dir := t.TempDir()
 	ci, err := Builder(dir, 1*GB).WithEvictionInterval(1 * time.Hour).Build()
 	assertNoError(t, err)
 	c := ci.(*cache)
 
-	validateEntryOrder(t, c, []*cacheEntry{})
+	validateOrder(t, c, []int64{})
 
-	e1 := &cacheEntry{key: 1}
-	c.addEntry(e1)
-	validateEntryOrder(t, c, []*cacheEntry{e1})
+	c.append(1, 1, 1, 1, 1)
+	validateOrder(t, c, []int64{1})
 
-	c.moveToFront(e1)
-	validateEntryOrder(t, c, []*cacheEntry{e1})
+	c.moveToFront(1)
+	validateOrder(t, c, []int64{1})
 
-	c.removeEntry(e1)
-	validateEntryOrder(t, c, []*cacheEntry{})
+	c.remove(1)
+	validateOrder(t, c, []int64{})
 
-	e2 := &cacheEntry{key: 2}
-	c.addEntry(e1)
-	c.addEntry(e2)
-	validateEntryOrder(t, c, []*cacheEntry{e2, e1})
+	c.append(1, 1, 1, 1, 1)
+	c.append(2, 2, 2, 2, 2)
+	validateOrder(t, c, []int64{1, 2})
 
-	c.moveToFront(e2)
-	validateEntryOrder(t, c, []*cacheEntry{e2, e1})
+	c.moveToFront(2)
+	validateOrder(t, c, []int64{2, 1})
 
-	c.moveToFront(e1)
-	validateEntryOrder(t, c, []*cacheEntry{e1, e2})
+	c.append(3, 3, 3, 3, 3)
+	c.moveToFront(3)
+	validateOrder(t, c, []int64{3, 1, 2})
 
-	c.removeEntry(e1)
-	validateEntryOrder(t, c, []*cacheEntry{e2})
+	c.remove(1)
+	validateOrder(t, c, []int64{3, 2})
 
-	e3 := &cacheEntry{key: 3}
-	c.addEntry(e3)
-	c.addEntry(e1)
-	validateEntryOrder(t, c, []*cacheEntry{e1, e3, e2})
+	c.append(1, 1, 1, 1, 1)
+	c.append(4, 4, 4, 4, 4)
+	validateOrder(t, c, []int64{3, 2, 1, 4})
 
-	c.moveToFront(e3)
-	validateEntryOrder(t, c, []*cacheEntry{e3, e1, e2})
+	// direct swap because 2 is in top half
+	c.moveToFront(2)
+	validateOrder(t, c, []int64{2, 3, 1, 4})
 
-	c.removeEntry(e1)
-	validateEntryOrder(t, c, []*cacheEntry{e3, e2})
-
-	e4 := &cacheEntry{key: 4}
-	c.addEntry(e4)
-	c.addEntry(e1)
-	validateEntryOrder(t, c, []*cacheEntry{e1, e4, e3, e2})
-
-	c.moveToFront(e2)
-	validateEntryOrder(t, c, []*cacheEntry{e2, e1, e4, e3})
-
-	c.removeEntry(e2)
-	validateEntryOrder(t, c, []*cacheEntry{e1, e4, e3})
-
-	c.removeEntry(e3)
-	validateEntryOrder(t, c, []*cacheEntry{e1, e4})
-
-	c.removeEntry(e4)
-	validateEntryOrder(t, c, []*cacheEntry{e1})
-
-	c.removeEntry(e1)
-	validateEntryOrder(t, c, []*cacheEntry{})
+	// 3 way swap
+	c.moveToFront(4)
+	validateOrder(t, c, []int64{4, 2, 1, 3})
 }
 
 func TestFileCache_Ignore_ErrNotExist(t *testing.T) {
@@ -1531,8 +1515,8 @@ func TestFileCache_Ignore_ErrNotExist(t *testing.T) {
 	_, err = c.Put(1, DATA, 0)
 	assertNoError(t, err)
 
-	entry := c.getEntry(1)
-	err = os.Remove(c.buildEntryPath(1, entry.mtime, entry.expires, entry.sequence))
+	sequence, _, mtime, expires, _ := c.lookup(1)
+	err = os.Remove(c.buildEntryPath(1, mtime, expires, sequence))
 	assertNoError(t, err)
 
 	_, err = c.Delete(1) // ignores that file is already missing
@@ -1540,8 +1524,8 @@ func TestFileCache_Ignore_ErrNotExist(t *testing.T) {
 
 	_, err = c.Put(1, DATA, 0)
 	assertNoError(t, err)
-	entry = c.getEntry(1)
-	err = os.Remove(c.buildEntryPath(1, entry.mtime, entry.expires, entry.sequence))
+	sequence, _, mtime, expires, _ = c.lookup(1)
+	err = os.Remove(c.buildEntryPath(1, mtime, expires, sequence))
 	assertNoError(t, err)
 	c.clearOrEvictDoingDeletes.Add(1) // simulate evict in progress
 

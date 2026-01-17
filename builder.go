@@ -3,6 +3,7 @@ package fcache
 import (
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"time"
@@ -84,6 +85,7 @@ func (b *builder) Build() (Cache, error) {
 	}
 	_, err = f.WriteString("test")
 	if err != nil {
+		_ = f.Close()
 		return nil, fmt.Errorf("failed to write test file %s: %w", writeTestPath, err)
 	}
 	err = f.Close()
@@ -98,10 +100,16 @@ func (b *builder) Build() (Cache, error) {
 	c := &cache{
 		cacheDir:         b.cacheDir,
 		targetSize:       int64(b.targetSize),
-		entries:          make(map[uint64]*cacheEntry),
+		keyToIdx:         make(map[uint64]int),
+		keys:             make([]uint64, 0),
+		sequences:        make([]uint64, 0),
+		sizes:            make([]int64, 0),
+		mtimes:           make([]int64, 0),
+		expires:          make([]int64, 0),
 		evictionInterval: b.evictionInterval,
 		dirMode:          dirMode,
 		fileMode:         b.fileMode,
+		random:           rand.New(rand.NewPCG(0, 0)), // using static seed so tests and benchmarks are stable
 		locker:           NewLocker(),
 	}
 

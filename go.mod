@@ -1,3 +1,3 @@
 module github.com/ydylla/fcache
 
-go 1.18
+go 1.25
