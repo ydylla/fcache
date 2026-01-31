@@ -227,18 +227,21 @@ func (c *cache) Delete(key uint64) (*EntryInfo, error) {
 
 	c.deletes.Add(1)
 
-	c.lock.RLock()
+	c.lock.Lock()
 	sequence, size, mtime, expires, ok := c.lookup(key)
-	c.lock.RUnlock()
+	if ok {
+		c.remove(key)
+	}
+	c.lock.Unlock()
 	if ok {
 		err := os.Remove(c.buildEntryPath(key, mtime, expires, sequence))
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			// if remove failed restore entry
+			c.lock.Lock()
+			c.append(key, sequence, size, mtime, expires)
+			c.lock.Unlock()
 			return nil, err
 		}
-
-		c.lock.Lock()
-		c.remove(key)
-		c.lock.Unlock()
 
 		return buildInfo(size, mtime, expires), nil
 	}
@@ -419,6 +422,16 @@ func (c *cache) append(key uint64, sequence uint64, size int64, mtime int64, exp
 	c.usedSize += size
 }
 
+func (c *cache) set(key uint64, sequence uint64, size int64, mtime int64, expires int64) {
+	idx := c.keyToIdx[key]
+	c.sequences[idx] = sequence
+	c.usedSize -= c.sizes[idx]
+	c.sizes[idx] = size
+	c.usedSize += size
+	c.mtimes[idx] = mtime
+	c.expires[idx] = expires
+}
+
 func (c *cache) lookup(key uint64) (sequence uint64, size int64, mtime int64, expires int64, ok bool) {
 	var idx int
 	idx, ok = c.keyToIdx[key]
@@ -539,39 +552,33 @@ func (c *cache) put(key uint64, ttl time.Duration, keepOpen bool, filler Filler)
 		return
 	}
 
-	c.lock.RLock()
-	existingSequence, existingSize, existingMtime, existingExpires, exists := c.lookup(key)
-	c.lock.RUnlock()
-	if exists {
-		oldPath := c.buildEntryPath(key, existingMtime, existingExpires, existingSequence)
-		oldDelErr := os.Remove(oldPath)
-		if oldDelErr != nil && !errors.Is(oldDelErr, os.ErrNotExist) {
-			err = oldDelErr
-			return
-		}
-	}
-
 	c.lock.Lock()
+	oldSequence, oldSize, oldMtime, oldExpires, exists := c.lookup(key)
 	if exists {
-		// lookup idx after c.lock.Lock() because it could have been swapped between now and c.lookup() above
-		idx := c.keyToIdx[key]
-		c.sequences[idx] = sequence
-		c.sizes[idx] = size
-		c.mtimes[idx] = mtime
-		c.expires[idx] = expires
-
-		c.usedSize -= existingSize
-		c.usedSize += size
+		c.set(key, sequence, size, mtime, expires)
 	} else {
 		c.append(key, sequence, size, mtime, expires)
 	}
 	c.moveToFront(key)
 	c.lock.Unlock()
 
+	// remove old file without holding global lock
+	if exists {
+		oldPath := c.buildEntryPath(key, oldMtime, oldExpires, oldSequence)
+		oldDelErr := os.Remove(oldPath)
+		if oldDelErr != nil && !errors.Is(oldDelErr, os.ErrNotExist) {
+			err = oldDelErr
+			// if remove failed restore old entry, new file is removed via defer above
+			c.lock.Lock()
+			c.set(key, oldSequence, oldSize, oldMtime, oldExpires)
+			c.lock.Unlock()
+		}
+	}
+
 	// do eviction in background after put
 	go c.evict()
 
-	return sequence, size, mtime, expires, file, nil
+	return sequence, size, mtime, expires, file, err
 }
 
 func readDirWithoutSort(name string) ([]os.DirEntry, error) {
